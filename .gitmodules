@@ -1,0 +1,4 @@
+[submodule "fhir-concept-publication-demo"]
+	path = fhir-concept-publication-demo
+	url = git@github.com:jmandel/fhir-concept-publication-demo.git
+	branch = snomed-wip

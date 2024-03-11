@@ -1,0 +1,66 @@
+CREATE TABLE CodeSystems (
+  id INTEGER PRIMARY KEY,
+  canonical_url TEXT,
+  canonical_version TEXT,
+  resource_json TEXT
+);
+
+CREATE TABLE Concepts (
+  id INTEGER PRIMARY KEY,
+  code_system_id INTEGER,
+  code TEXT,
+  display TEXT,
+  FOREIGN KEY (code_system_id) REFERENCES CodeSystems(id)
+);
+
+CREATE TABLE PropertyTypes (
+  id INTEGER PRIMARY KEY,
+  code_system_id INTEGER,
+  code TEXT,
+  uri TEXT,
+  description TEXT,
+  type TEXT CHECK (type IN ('code', 'coding', 'string', 'integer', 'boolean', 'dateTime', 'decimal')),
+  is_a BOOLEAN,
+  FOREIGN KEY (code_system_id) REFERENCES CodeSystems(id)
+);
+
+CREATE TABLE PropertyInstances (
+  concept_id INTEGER,
+  property_type_id INTEGER,
+  value TEXT,
+  ---- PRIMARY KEY (concept_id, property_type_id, value),
+  -- ^ because SNOMED attribute groups allow repetition; need another prop (TODO)
+  FOREIGN KEY (concept_id) REFERENCES Concepts(id),
+  FOREIGN KEY (property_type_id) REFERENCES PropertyTypes(id)
+);
+
+create index idx_PropertyInstances on PropertyInstances(concept_id, property_type_id, value);
+
+CREATE TABLE ConceptDesignations (
+  concept_id INTEGER,
+  language TEXT,
+  use_system TEXT,
+  use_value TEXT,
+  value TEXT,
+  ---- PRIMARY KEY (concept_id, language, use_system, use_value),
+  -- ^  because SNOMED descriptions can vary by caseSignificanceId alone; need another prop (TODO)
+  FOREIGN KEY (concept_id) REFERENCES Concepts(id)
+);
+
+create index idx_ConceptDesignations on ConceptDesignations(concept_id, language, use_system, use_value);
+
+CREATE VIEW HierarchyView AS
+WITH RECURSIVE ancestors(ancestor_id, descendant_id) AS (
+  SELECT pic.id, pi.concept_id
+  FROM PropertyTypes pt
+  JOIN PropertyInstances pi ON pi.property_type_id = pt.id
+  JOIN Concepts pic on pi.value = pic.code
+  WHERE pt.is_a = 1
+  UNION
+  SELECT  pic.id, a.descendant_id
+  FROM ancestors a
+  JOIN PropertyInstances pi ON a.ancestor_id = pi.concept_id
+  JOIN PropertyTypes pt ON pi.property_type_id = pt.id AND pt.is_a = 1
+  JOIN Concepts pic on pi.value = pic.code
+)
+SELECT * FROM ancestors;

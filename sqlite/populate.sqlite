@@ -1,0 +1,79 @@
+.read '${SCHEMA_FILENAME}'
+
+CREATE TEMPORARY TABLE RawData (
+  json TEXT
+);
+
+CREATE TEMPORARY TABLE Variables (
+  name TEXT PRIMARY KEY,
+  value INTEGER
+);
+
+
+.import '${NDJSON_FILENAME}' RawData
+
+INSERT INTO CodeSystems (canonical_url, canonical_version, resource_json)
+
+SELECT
+  json_extract(json, '$.url') AS url,
+  json_extract(json, '$.version') AS version,
+  json AS resource_json
+FROM RawData
+WHERE rowid = 1;
+
+INSERT INTO Variables (name, value) VALUES ('code_system_id', last_insert_rowid());
+
+INSERT INTO PropertyTypes (code_system_id, code, uri, description, type, is_a)
+SELECT
+  (SELECT value FROM Variables WHERE name = 'code_system_id') AS code_system_id,
+  json_extract(property.value, '$.code') AS code,
+  json_extract(property.value, '$.uri') AS uri,
+  json_extract(property.value, '$.description') AS description,
+  json_extract(property.value, '$.type') AS type,
+  CASE WHEN json_extract(property.value, '$.code') in ('isa', 'parent') THEN 1 ELSE 0 END AS is_a
+  --- ^^ TODO look for an extension in the data
+FROM RawData, json_each(json_extract(RawData.json, '$.property')) AS property
+WHERE RawData.rowid = 1;
+
+INSERT INTO Concepts (code_system_id, code, display)
+SELECT
+  (SELECT value FROM Variables WHERE name = 'code_system_id') AS code_system_id,
+  json_extract(json, '$.code') AS code,
+  json_extract(json, '$.display') AS display
+FROM RawData
+WHERE rowid > 1;
+
+INSERT INTO PropertyInstances (concept_id, property_type_id, value)
+SELECT
+  c.id AS concept_id,
+  pt.id AS property_type_id,
+  CASE
+    WHEN json_extract(property.value, '$.valueCode') IS NOT NULL THEN json_extract(property.value, '$.valueCode')
+    ELSE json_extract(property.value, '$.valueString')
+  END AS value
+FROM RawData rd
+JOIN Concepts c ON c.code = json_extract(rd.json, '$.code') AND c.code_system_id = (SELECT value FROM Variables WHERE name = 'code_system_id')
+JOIN PropertyTypes pt ON pt.code = json_extract(property.value, '$.code') AND pt.code_system_id = (SELECT value FROM Variables WHERE name = 'code_system_id')
+CROSS JOIN json_each(json_extract(rd.json, '$.property')) AS property
+WHERE rd.rowid > 1;
+
+INSERT INTO ConceptDesignations (concept_id, language, use_system, use_value, value)
+SELECT
+  c.id AS concept_id,
+  json_extract(designation.value, '$.language') AS language,
+  json_extract(designation.value, '$.use.system') AS use_system,
+  json_extract(designation.value, '$.use.code') AS use_value,
+  json_extract(designation.value, '$.value') AS value
+FROM RawData rd
+JOIN Concepts c ON c.code = json_extract(rd.json, '$.code') AND c.code_system_id = (SELECT value FROM Variables WHERE name = 'code_system_id')
+CROSS JOIN json_each(json_extract(rd.json, '$.designation')) AS designation
+WHERE rd.rowid > 1;
+
+DROP TABLE RawData;
+DROP TABLE Variables;
+
+CREATE TABLE Hierarchy as SELECT * from HierarchyView;
+CREATE INDEX IF NOT EXISTS idx_Hierarchy_ancestor_id ON Hierarchy (ancestor_id);
+CREATE INDEX IF NOT EXISTS idx_Hierarchy_descendant_id ON Hierarchy (descendant_id);
+
+VACUUM;
