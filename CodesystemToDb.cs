@@ -32,8 +32,8 @@ public class DatabasePopulator
     public static void PopulateDatabase(string ndjsonGzFilename, string databaseFilename, CancellationToken cancellationToken = default)
     {
         Console.WriteLine("Populating db");
-        string schema = LoadAssemblyFile.AsString("TermSql.sqlite.schema.sqlite");
-        string scriptTemplate = LoadAssemblyFile.AsString("TermSql.sqlite.populate.sqlite");
+        string schema = LoadAssemblyFile.AsString("TermSqlite.sqlite.schema.sqlite");
+        string scriptTemplate = LoadAssemblyFile.AsString("TermSqlite.sqlite.populate.sqlite");
 
         string[] scriptParts = scriptTemplate.Split(new[] { ".import" }, StringSplitOptions.None);
 

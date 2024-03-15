@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Sprache;
 using System.Text;
 
-var rootCommand = new RootCommand("TermSql");
+var rootCommand = new RootCommand("TermSqlite");
 var dbFolder = new Option<string>(
     "--dbs",
     description: "Path to the folder containing SQLite files.",
