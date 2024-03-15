@@ -378,11 +378,11 @@ public class VclParserTests
     [Test]
     public void TestExpressionDisjunction()
     {
-        string input = "a.b;c";
+        string input = "a;b";
         var result = VCLParser.Expr.End().Parse(input);
         Console.WriteLine(result);
         Assert.That(result, Is.TypeOf<ExpressionDisjunction>());
-        string input2 = "(<<'Medications'):'common use'='Treat bacterial infections','administration route'='Oral'";
+        string input2 = "*:consists_of.tty=scdc";
 
         Expression result2 = VCLParser.Expr.Parse(input2);
         Console.WriteLine($"r2 {result2:#?}");

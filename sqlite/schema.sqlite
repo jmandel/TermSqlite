@@ -64,3 +64,14 @@ WITH RECURSIVE ancestors(ancestor_id, descendant_id) AS (
   JOIN Concepts pic on pi.value = pic.code
 )
 SELECT * FROM ancestors;
+
+CREATE VIEW ConceptPropertyView AS
+SELECT
+    c.id AS concept_id,
+    c.code AS concept_code,
+    pt.code as property_code, c_target.id AS target_concept_id, pi.value as target_value
+FROM
+    Concepts c
+    JOIN PropertyInstances pi ON c.id = pi.concept_id
+    JOIN PropertyTypes pt ON pi.property_type_id = pt.id
+    left JOIN Concepts c_target ON pi.value = c_target.code

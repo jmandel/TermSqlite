@@ -1,4 +1,5 @@
 using Sprache;
+using SqlParser.Tokens;
 
 public record struct FhirConcept
 {
@@ -64,28 +65,65 @@ public class QueryBuilder
         };
     }
 
-    private string BuildSqlConstraintSimple(ConstraintSimple constraint)
-    {
-        var constraintValue = constraint.Value switch
-        {
-            ValueConstant constant => constant.Constant.ToString(),
-            ValueExpr expr => BuildSubquery(expr.Expr),
-            _ => throw new ArgumentException("Invalid constraint value type")
-        };
 
-        var onPath = string.Join(".", constraint.OnPath);
-        return injector.With(new Dictionary<string, object>
-        {
-            ["constraintName"] = onPath,
-            ["constraintTarget"] = constraintValue!
-        }, (p) => $@"
-            exists (
-                select 1 from {DbName}.PropertyInstances
-                where concept_id = parent.id
-                    and property_type_id = (select id from {DbName}.PropertyTypes where  code = @{p["constraintName"]})
-                    and (value = @{p["constraintTarget"]})
-            )").Item1;
+private string BuildSqlConstraintSimple(ConstraintSimple constraint)
+{
+    var constraintValue = constraint.Value switch
+    {
+        ValueConstant constant => constant.Constant.ToString(),
+        // ValueExpr expr => BuildSubquery(expr.Expr),
+        _ => throw new ArgumentException("Invalid constraint value type")
+    };
+
+    var joinConditions = new List<string>();
+    var propertyAliases = new List<string>();
+    var conceptAliases = new List<string>();
+    var whereConditions = new List<string>();
+
+    var constraintTargetParamResult = injector.With(new Dictionary<string, object> { ["constraintTarget"] = constraintValue! });
+
+    for (int i = 0; i < constraint.OnPath.Count; i++)
+    {
+        var propertyAlias = $"prop{i}";
+        propertyAliases.Add(propertyAlias);
+
+        var propertyCodeParam = $"propertyCode{i}";
+        var propertyCodeParamResult = injector.With(new Dictionary<string, object> { [propertyCodeParam] = constraint.OnPath[i] });
+
+        var conceptAlias = $"concept{i}";
+        conceptAliases.Add(conceptAlias);
+
+
+        joinConditions.Add(@$"
+            {((i == 0) ?
+                $"ConceptProperty m{i}" : 
+                $"JOIN ConceptProperty m{i} ON m{i - 1}.target_concept_id = m{i}.concept_id")
+            }");
+
+        whereConditions.Add($" m{i}.property_code = @{propertyCodeParamResult[propertyCodeParam]}");
+
+        if (i == 0) {
+            whereConditions.Add($" m{i}.concept_id = parent.id");
+        }
+
+        if (i == constraint.OnPath.Count - 1) {
+            whereConditions.Add($" m{i}.target_value = @{constraintTargetParamResult["constraintTarget"]}");
+        }
+
     }
+
+    var sql = $@"
+        EXISTS (
+            SELECT 1
+            FROM 
+            {string.Join("\n", joinConditions)}
+            WHERE
+             {string.Join(" AND ", whereConditions)}
+        )";
+
+    return sql;
+}
+ 
 
     private string BuildSqlConstraintDesignation(ConstraintDesignation designation)
     {

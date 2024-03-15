@@ -76,4 +76,8 @@ CREATE TABLE Hierarchy as SELECT * from HierarchyView;
 CREATE INDEX IF NOT EXISTS idx_Hierarchy_ancestor_id ON Hierarchy (ancestor_id);
 CREATE INDEX IF NOT EXISTS idx_Hierarchy_descendant_id ON Hierarchy (descendant_id);
 
+CREATE TABLE ConceptProperty as SELECT * from ConceptPropertyView;
+CREATE INDEX IF NOT EXISTS idx_ConceptProperty_concept_id ON ConceptProperty (concept_id, property_code, target_value);
+
+
 VACUUM;
