@@ -25,7 +25,7 @@ public class VclManager
         var qb = new QueryBuilder { DbName = targetDb.Name };
         await foreach (var row in sqliteManager.QueryAsync(qb.Build(parsed), qb.Parameters, new List<string>() { targetDb.Name }))
         {
-            yield return new FhirConcept { System = codeSystem, Code = (string)row["code"], Display = (string)row["display"] };
+            yield return new FhirConcept { System = codeSystem, Code = (string)row["code"], Display = Convert.ToString(row["display"]) ?? "" };
         }
     }
 }

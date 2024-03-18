@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Sprache;
 using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Unicode;
 
 var rootCommand = new RootCommand("TermSqlite");
 var dbFolder = new Option<string>(
@@ -17,9 +19,14 @@ var ndjsonFolder = new Option<string>(
     description: "Path to the folder containing .ndjson.gz files",
     getDefaultValue: () => null);
 
+var port = Environment.GetEnvironmentVariable("PORT") ?? "5000";
+
 var serializeOptions = new System.Text.Json.JsonSerializerOptions
 {
-    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    WriteIndented = true
+
 };
 
 
@@ -66,103 +73,42 @@ rootCommand.SetHandler(async (dbFolder, ndjsonFolder) =>
         }, "application/json");
     });
 
-
-    app.MapGet("/", async (HttpContext httpContext) =>
+    app.MapGet("/", (HttpContext httpContext) =>
     {
-
-        var dbNamesToAttach = sqliteManager.Dbs.Keys.ToList(); // Adjust the logic to select DBs as needed
-        var randomCodeSystems = sqliteManager.Dbs.OrderBy(x => Guid.NewGuid()).Take(2).ToList();
-        var randomDbs = randomCodeSystems.Select(dbentry => dbentry.Value).DistinctBy(db => db.Name).ToList();
-
-        // Console.WriteLine("Code Systems:");
-        foreach (var cs in randomCodeSystems)
+        var response = new
         {
-            // Console.WriteLine($"codesytstem: {cs}");
-        }
+            status = "OK",
+            huh = "Check out /ValueSet/$vcl?system=http://www.nlm.nih.gov/research/umls/rxnorm&query=*:tty=SBD,{{term=tylenol}}"
+        };
 
-        string query = string.Join(" UNION ", randomDbs.Select(db => $"SELECT * FROM {db.Name}.Concepts "));
-        // Console.WriteLine($"QQ {query}");
-        var dbNamesToAttach2 = randomDbs.Select(db => db.Name).ToList();
-
-        httpContext.Response.StatusCode = 200;
-        httpContext.Response.ContentType = "application/json";
-
-        // create cancelation token
-        var cancellationTokenSource = new CancellationTokenSource();
-        cancellationTokenSource.CancelAfter(TimeSpan.FromMilliseconds(5000));
-        CancellationToken cancellationToken = cancellationTokenSource.Token;
-        await using var streamWriter = new StreamWriter(httpContext.Response.Body);
-        try
-        {
-            await foreach (var row in sqliteManager.QueryAsync(query, new Dictionary<string, object>(), dbNamesToAttach2, cancellationToken))
-            {
-                var json = System.Text.Json.JsonSerializer.Serialize(row);
-                await streamWriter.WriteLineAsync(json);
-                await streamWriter.FlushAsync();
-            }
-        }
-        catch (Exception ex)
-        {
-            var errorJson = System.Text.Json.JsonSerializer.Serialize(new { error = ex.Message });
-            await streamWriter.WriteLineAsync(errorJson);
-            await streamWriter.FlushAsync();
-        }
-    });
-    Task.Run(() =>
-    {
-        app.Run();
+        return Results.Json(response, serializeOptions, statusCode: 200);
     });
 
-    Console.WriteLine("Enter a blank line to exit.");
-    while (true)
+
+    if (!Console.IsInputRedirected)
     {
-
-        string input = ReadLine.Read("> ");
-        ReadLine.AddHistory(input);
-
-
-        if (string.IsNullOrWhiteSpace(input))
-            break;
-
-        if (sqliteManager.Dbs.Count >= 1)
+        Console.WriteLine("Enter a blank line to exit.");
+        _ = Task.Run(() =>
         {
-            var randomCodeSystems = sqliteManager.Dbs.OrderBy(x => Guid.NewGuid()).Take(2).ToList();
-            var randomDbs = randomCodeSystems.Select(dbentry => dbentry.Value).DistinctBy(db => db.Name).ToList();
+            app.Run($"http://0.0.0.0:{port}");
+        });
 
-            Console.WriteLine("DBS");
-            foreach (var d in randomDbs)
-            {
-                Console.WriteLine($"dbfile: {d.Name}");
-            }
 
-            Console.WriteLine("Code Systems:");
-            foreach (var cs in randomCodeSystems)
-            {
-                Console.WriteLine($"codesytstem: {cs}");
-                Console.WriteLine($"{String.Join(", ", cs.Value.CodeSystems.Select(x => x.CanonicalUrl))}");
-            }
-
-            string query = "select * from (" + string.Join(" UNION ", randomDbs.Select(db => $"SELECT * FROM {db.Name}.Concepts")) + ") order by RANDOM() limit 10";
-
-            Console.WriteLine(query);
-            var dbNamesToAttach = randomDbs.Select(db => db.Name).ToList();
-            Console.WriteLine($"Querying databases: {string.Join(", ", dbNamesToAttach)}");
-            Console.WriteLine($"query from thread {Environment.CurrentManagedThreadId}");
-            var results = sqliteManager.QueryAsync(query, new Dictionary<string, object>(), dbNamesToAttach);
-
-            Console.WriteLine("Results:");
-            await foreach (var row in results)
-            {
-                Console.WriteLine($"ID: {row["id"]}, Code: {row["code"]}, Display: {row["display"]}");
-            }
-        }
-        else
+        while (true)
         {
-            Console.WriteLine("At least one codesystem required.");
-        }
+            string input = ReadLine.Read("> ");
+            ReadLine.AddHistory(input);
 
-        Console.WriteLine();
+            if (string.IsNullOrWhiteSpace(input))
+                break;
+        }
     }
+    else
+    {
+        Console.WriteLine("Running without CLI interaction. Press Ctrl+C to exit.");
+        app.Run($"http://0.0.0.0:{port}");
+    }
+
 }, dbFolder, ndjsonFolder);
 
 await rootCommand.InvokeAsync(args);
