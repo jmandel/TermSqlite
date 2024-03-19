@@ -12,33 +12,139 @@ using NUnit.Framework;
 using FluentAssertions;
 using SqlParser;
 
-public abstract record Expression;
-
-public record ExpressionConjunction(List<Expression> Parts) : Expression
+public abstract record Expression
 {
+    public virtual Expression Simplify() => this;
+
+
+}
+
+public abstract record ExpressionLogical(List<Expression> Parts, Expression? Nucleus = null) : Expression
+{
+    protected static bool HasHierarchyBelow(Expression expression)
+    {
+        return expression switch
+        {
+            ExpressionHierarchy => true,
+            ExpressionLogical logical => logical.Parts.Any(HasHierarchyBelow),
+            _ => false
+        };
+    }
+    public override Expression Simplify()
+    {
+        var simplifiedParts = Parts.Select(p => p.Simplify()).ToList();
+        var logicalParts = new List<Expression>();
+
+        foreach (var part in simplifiedParts)
+        {
+            if (part.GetType() == GetType())
+            {
+                var logical = (ExpressionLogical)part;
+                logicalParts.AddRange(logical.Parts);
+                if (logical.Nucleus != null)
+                {
+                    logicalParts.Add(logical.Nucleus);
+                }
+            }
+            else
+            {
+                logicalParts.Add(part);
+            }
+        }
+
+        if (Nucleus != null) {
+            logicalParts.Add(Nucleus);
+        }
+
+        return CreateExpression(logicalParts, null);
+    }
+
+    protected abstract ExpressionLogical CreateExpression(List<Expression> parts, Expression? nucleus);
+
     public override string ToString()
     {
         string partsList = string.Join(", ", Parts.Select(p => p.ToString()));
-        return $"ExpressionConjunction {{ Parts = [{partsList}] }}";
-    }
-}
-public record ExpressionDisjunction(List<Expression> Parts) : Expression
-{
-    public override string ToString()
-    {
-        string partsList = string.Join(", ", Parts.Select(p => p.ToString()));
-        return $"ExpressionDisjunction {{ Parts = [{partsList}] }}";
+        return $"{GetType().Name} {{ Nucleus = {Nucleus} , Parts = [{string.Join(" . " , partsList)}]}}";
     }
 }
 
+public record ExpressionConjunction(List<Expression> Parts, Expression? Nucleus = null) : ExpressionLogical(Parts, Nucleus)
+{
+    public override Expression Simplify()
+    {
+
+        (var simplifiedParts, _) = (ExpressionConjunction)base.Simplify();
+
+        var hierarchyParts = simplifiedParts.Where(p => HasHierarchyBelow(p)).ToList();
+
+        Expression? nucleus = null;
+
+        if (hierarchyParts.Count == 0)
+        {
+            nucleus = simplifiedParts.FirstOrDefault();
+            if (nucleus != null)
+            {
+                simplifiedParts.Remove(nucleus);
+            }
+        }
+        else if (hierarchyParts.Count == 1)
+        {
+            nucleus = hierarchyParts[0];
+            simplifiedParts.Remove(nucleus);
+        }
+
+        return CreateExpression(simplifiedParts, nucleus);
+    }
+
+
+    protected override ExpressionLogical CreateExpression(List<Expression> parts, Expression? nucleus)
+    {
+        return new ExpressionConjunction(parts, nucleus);
+   }
+    public override string ToString()
+    {
+        return $"Conjunction {base.ToString()}";
+    }
+
+}
+
+public record ExpressionDisjunction(List<Expression> Parts, Expression? Nucleus = null) : ExpressionLogical(Parts, Nucleus)
+{
+    protected override ExpressionLogical CreateExpression(List<Expression> parts, Expression? nucleus)
+    {
+        return new ExpressionDisjunction(parts, nucleus);
+    }
+    public override string ToString()
+    {
+        return $"Disjunction {base.ToString()}";
+    }
+
+
+}
 
 public record ExpressionConstraint(Constraint Constraint) : Expression;
-public record ExpressionConstant(string Code) : Expression;
-public record ExpressionHierarchy(RelationshipModifier Modifier, Expression Expression) : Expression;
 
+public record ExpressionConstant(string Code) : Expression;
+
+public record ExpressionHierarchy(RelationshipModifier Modifier, Expression Expression) : Expression
+{
+    public override Expression Simplify()
+    {
+        var simplifiedExpression = Expression.Simplify();
+        if (Modifier == RelationshipModifier.Self)
+        {
+            return simplifiedExpression;
+        }
+        return this with { Expression = simplifiedExpression };
+    }
+
+
+
+}
 
 public enum RelationshipModifier
 {
+    Self,
     Descendant,
     DescendantOrSelf,
     Ancestor,
@@ -185,7 +291,7 @@ public class VCLParser
 
     // TODO add back support for suffix paths?
     private static readonly Parser<Expression> SimpleExpr =
-        from hierarchy in Ws(ParseRelationshipModifier).Optional()
+        from hierarchy in Ws(ParseRelationshipModifier).Optional().Select(h => h.GetOrElse(RelationshipModifier.Self))
         from c in ((
             from _ in Parse.Char('(')
             from e in Expr
@@ -198,17 +304,14 @@ public class VCLParser
             )
         ).Or(
             from value in Value
-            select  value switch {
+            select value switch
+            {
                 ValueConstant(string c) => new ExpressionConstant(c),
                 ValueExpr(var e) => e,
                 _ => throw new Exception("Unexpected value type in expression")
             }
         ))
-        select hierarchy.IsDefined switch {
-            true => new ExpressionHierarchy(hierarchy.Get(), c),
-            // true => c,
-            false => c,
-        };
+        select new ExpressionHierarchy(hierarchy, c).Simplify();
 
     private static readonly Parser<char> Sep =
         Parse.Char(',').Or(Parse.Char(';'));
@@ -224,9 +327,9 @@ public class VCLParser
             (acc, x) =>
             {
                 if (x.Sep == ',')
-                    return new ExpressionConjunction(new List<Expression> { acc, x.Expr });
+                    return new ExpressionConjunction(new List<Expression> { acc, x.Expr }).Simplify();
                 else
-                    return new ExpressionDisjunction(new List<Expression> { acc, x.Expr });
+                    return new ExpressionDisjunction(new List<Expression> { acc, x.Expr }).Simplify();
             }
         );
 
@@ -252,7 +355,7 @@ public class VclParserTests
         var result = VCLParser.Expr.Parse(input);
 
         var expected = new ExpressionConstraint(
-                Constraint: new ConstraintProperty(new(){"a"}, new ValueConstant("1"), null)
+                Constraint: new ConstraintProperty(new() { "a" }, new ValueConstant("1"), null)
                 );
 
         result.Should().BeEquivalentTo(expected);
@@ -265,7 +368,7 @@ public class VclParserTests
     {
         string input = "a,b";
         var result = VCLParser.Expr.Parse(input);
-        Console.WriteLine(result);
+        // Console.WriteLine(result);
         Assert.That(result, Is.TypeOf<ExpressionConjunction>());
     }
 
@@ -274,7 +377,7 @@ public class VclParserTests
     {
         string input = "a;b";
         var result = VCLParser.Expr.End().Parse(input);
-        Console.WriteLine(result);
+        // Console.WriteLine(result);
         Assert.That(result, Is.TypeOf<ExpressionDisjunction>());
     }
 
@@ -285,10 +388,10 @@ public class VclParserTests
         var result = VCLParser.Expr.Parse(input);
         // Console.WriteLine(result);
 
-        string input2 = "{{term = 'oh'}}";
+        string input2 = "d=4;(a=1,b=2);c=3";
 
         Expression result2 = VCLParser.Expr.Parse(input2);
-        Console.WriteLine($"r2 {result2:#?}");
+        Console.WriteLine($"r2 {result2}");
 
         var b = new QueryBuilder();
         var sql = b.Build(result2);

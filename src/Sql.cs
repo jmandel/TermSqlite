@@ -154,7 +154,7 @@ public class QueryBuilder
 
     public string Build(Expression expr)
     {
-        return @$"select * from {DbName}.Concepts where id in ({BuildSql(expr)})";
+        return @$"select * from {DbName}.Concepts where id in ({BuildSql(expr)} order by id)";
     }
 
     public string BuildSqlExpressionHierarchy(ExpressionHierarchy expr)
