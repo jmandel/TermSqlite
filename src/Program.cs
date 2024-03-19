@@ -14,7 +14,7 @@ var dbFolder = new Option<string>(
     getDefaultValue: () => Directory.GetCurrentDirectory());
 rootCommand.AddOption(dbFolder);
 
-var ndjsonFolder = new Option<string>(
+var ndjsonFolder = new Option<string?>(
     "--ndjsons",
     description: "Path to the folder containing .ndjson.gz files",
     getDefaultValue: () => null);
@@ -32,7 +32,7 @@ var serializeOptions = new System.Text.Json.JsonSerializerOptions
 
 rootCommand.AddOption(ndjsonFolder);
 
-rootCommand.SetHandler(async (dbFolder, ndjsonFolder) =>
+rootCommand.SetHandler((dbFolder, ndjsonFolder) =>
 {
     string connectionString = "Data Source=file::memory:?immutable=true;Pooling=False";
     var sqliteManager = new SqliteManager(dbFolder, connectionString);

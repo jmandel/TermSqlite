@@ -49,21 +49,29 @@ CREATE TABLE ConceptDesignations (
 
 create index idx_ConceptDesignations on ConceptDesignations(concept_id, language, use_system, use_value);
 
-CREATE VIEW HierarchyView AS
-WITH RECURSIVE ancestors(ancestor_id, descendant_id) AS (
-  SELECT pic.id, pi.concept_id
-  FROM PropertyTypes pt
-  JOIN PropertyInstances pi ON pi.property_type_id = pt.id
-  JOIN Concepts pic on pi.value = pic.code
-  WHERE pt.is_a = 1
-  UNION
-  SELECT  pic.id, a.descendant_id
-  FROM ancestors a
-  JOIN PropertyInstances pi ON a.ancestor_id = pi.concept_id
-  JOIN PropertyTypes pt ON pi.property_type_id = pt.id AND pt.is_a = 1
-  JOIN Concepts pic on pi.value = pic.code
-)
-SELECT * FROM ancestors;
+CREATE VIEW HierarchyView(ancestor_id, descendant_id) AS
+  WITH RECURSIVE ancestors AS (
+    SELECT pic.id AS ancestor_id, pi.concept_id AS descendant_id
+    FROM PropertyInstances pi
+    JOIN PropertyTypes pt ON pi.property_type_id = pt.id AND pt.code = 'ancestor'
+    JOIN Concepts pic ON pi.value = pic.code
+    WHERE EXISTS (SELECT 1 FROM PropertyTypes WHERE code = 'ancestor')
+    UNION ALL
+    SELECT pic.id, pi.concept_id
+      FROM PropertyTypes pt
+      JOIN PropertyInstances pi ON pi.property_type_id = pt.id
+      JOIN Concepts pic ON pi.value = pic.code
+      WHERE pt.is_a = 1
+       AND NOT EXISTS (SELECT 1 FROM PropertyTypes WHERE code = 'ancestor')
+      UNION
+      SELECT pic.id, a.descendant_id
+      FROM ancestors a
+      JOIN PropertyInstances pi ON a.ancestor_id = pi.concept_id
+      JOIN PropertyTypes pt ON pi.property_type_id = pt.id AND pt.is_a = 1
+      JOIN Concepts pic ON pi.value = pic.code
+      WHERE NOT EXISTS (SELECT 1 FROM PropertyTypes WHERE code = 'ancestor')
+  )
+  SELECT * FROM ancestors;
 
 CREATE VIEW ConceptPropertyView AS
 SELECT

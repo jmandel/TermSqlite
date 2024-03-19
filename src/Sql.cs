@@ -58,72 +58,68 @@ public class QueryBuilder
     {
         return expr switch
         {
-            ExpressionSimple simple => BuildSqlSimple(simple),
+            ExpressionConstraint constraint => BuildSqlExpressionConstraint(constraint),
             ExpressionConjunction conjunction => BuildSqlExpressionConjunction(conjunction.Parts),
             ExpressionDisjunction disjunction => BuildSqlExpressionDisjunction(disjunction.Parts),
-            _ => throw new ArgumentException("Invalid expression type")
+            ExpressionHierarchy e => BuildSqlExpressionHierarchy(e),
+            ExpressionConstant c => BuildSqlExpressionConstant(c)
         };
     }
 
 
-private string BuildSqlConstraintSimple(ConstraintSimple constraint)
-{
-    var constraintValue = constraint.Value switch
+    private string BuildSqlConstraintSimple(ConstraintProperty constraint)
     {
-        ValueConstant constant => constant.Constant.ToString(),
-        // ValueExpr expr => BuildSubquery(expr.Expr),
-        _ => throw new ArgumentException("Invalid constraint value type")
-    };
+        var constraintValue = constraint.Value switch
+        {
+            ValueConstant constant => constant.Constant.ToString(),
+            // ValueExpr expr => BuildSubquery(expr.Expr),
+            _ => throw new ArgumentException("Invalid constraint value type")
+        };
 
-    var joinConditions = new List<string>();
-    var propertyAliases = new List<string>();
-    var conceptAliases = new List<string>();
-    var whereConditions = new List<string>();
+        var joinConditions = new List<string>();
+        var propertyAliases = new List<string>();
+        var conceptAliases = new List<string>();
+        var whereConditions = new List<string>();
 
-    var constraintTargetParamResult = injector.With(new Dictionary<string, object> { ["constraintTarget"] = constraintValue! });
+        var constraintTargetParamResult = injector.With(new Dictionary<string, object> { ["constraintTarget"] = constraintValue! });
 
-    for (int i = 0; i < constraint.OnPath.Count; i++)
-    {
-        var propertyAlias = $"prop{i}";
-        propertyAliases.Add(propertyAlias);
+        for (int i = 0; i < constraint.OnPath.Count; i++)
+        {
+            var propertyAlias = $"prop{i}";
+            propertyAliases.Add(propertyAlias);
 
-        var propertyCodeParam = $"propertyCode{i}";
-        var propertyCodeParamResult = injector.With(new Dictionary<string, object> { [propertyCodeParam] = constraint.OnPath[i] });
+            var propertyCodeParam = $"propertyCode{i}";
+            var propertyCodeParamResult = injector.With(new Dictionary<string, object> { [propertyCodeParam] = constraint.OnPath[i] });
 
-        var conceptAlias = $"concept{i}";
-        conceptAliases.Add(conceptAlias);
+            var conceptAlias = $"concept{i}";
+            conceptAliases.Add(conceptAlias);
 
 
-        joinConditions.Add(@$"
+            joinConditions.Add(@$"
             {((i == 0) ?
-                $"ConceptProperty m{i}" : 
-                $"JOIN ConceptProperty m{i} ON m{i - 1}.target_concept_id = m{i}.concept_id")
-            }");
+                    $"ConceptProperty m{i}" :
+                    $"JOIN ConceptProperty m{i} ON m{i - 1}.target_concept_id = m{i}.concept_id")}");
 
-        whereConditions.Add($" m{i}.property_code = @{propertyCodeParamResult[propertyCodeParam]}");
+            whereConditions.Add($" m{i}.property_code = @{propertyCodeParamResult[propertyCodeParam]}");
 
-        if (i == 0) {
-            whereConditions.Add($" m{i}.concept_id = parent.id");
+
+            if (i == constraint.OnPath.Count - 1)
+            {
+                whereConditions.Add($" m{i}.target_value = @{constraintTargetParamResult["constraintTarget"]}");
+            }
+
         }
 
-        if (i == constraint.OnPath.Count - 1) {
-            whereConditions.Add($" m{i}.target_value = @{constraintTargetParamResult["constraintTarget"]}");
-        }
-
-    }
-
-    var sql = $@"
-        EXISTS (
-            SELECT 1
-            FROM 
+        var sql = $@"
+        select m0.concept_id as id from 
             {string.Join("\n", joinConditions)}
             WHERE
              {string.Join(" AND ", whereConditions)}
-        )";
+    ";
 
-    return sql;
-}
- 
+        return sql;
+    }
+
 
     private string BuildSqlConstraintDesignation(ConstraintDesignation designation)
     {
@@ -134,73 +130,64 @@ private string BuildSqlConstraintSimple(ConstraintSimple constraint)
             ["useCode"] = designation.UseCode!,
             ["value"] = string.Format("%{0}%", designation.Value)
         }.Where(kv => kv.Value is not null).ToDictionary(), (p) => $@"
-        exists (
-            select 1 from {DbName}.ConceptDesignations
-            where concept_id = parent.id
+        select concept_id as id from {DbName}.ConceptDesignations
+            where 
                 {(designation.Language != null ? "and language = @language" : "")}
                 {(designation.UseSystem != null ? "and use_system = @useSystem" : "")}
                 {(designation.UseCode != null ? "and use_value = @useCode" : "")}
-                and value LIKE @{p["value"]}
-        )").Item1;
+                {((designation.Language != null || designation.UseSystem != null || designation.UseCode != null)
+                    ? " and " : "")} value LIKE @{p["value"]}
+
+        ").Item1;
     }
 
     private string BuildSqlConstraint(Constraint constraint)
     {
         return constraint switch
         {
-            ConstraintSimple simple => BuildSqlConstraintSimple(simple),
-            ConstraintConjunction conjunction => BuildSqlConstraintConjunction(conjunction.Parts),
-            ConstraintDisjunction disjunction => BuildSqlConstraintDisjunction(disjunction.Parts),
+            ConstraintProperty simple => BuildSqlConstraintSimple(simple),
             ConstraintDesignation designation => BuildSqlConstraintDesignation(designation),
+            _ => throw new NotImplementedException(),
         };
     }
 
-    private string BuildSqlConstraintConjunction(List<Constraint> parts)
-    {
-        var constraints = parts.Select(BuildSqlConstraint).ToList();
-        return string.Join(" AND ", constraints);
-    }
-
-    private string BuildSqlConstraintDisjunction(List<Constraint> parts)
-    {
-        var constraints = parts.Select(BuildSqlConstraint).ToList();
-        return string.Join(" OR ", constraints);
-    }
 
     public string Build(Expression expr)
     {
-        return @$"select * from {DbName}.Concepts where id in ({BuildSqlSimple((ExpressionSimple)expr)})";
+        return @$"select * from {DbName}.Concepts where id in ({BuildSql(expr)})";
     }
 
-    public string BuildSqlSimple(ExpressionSimple expr)
+    public string BuildSqlExpressionHierarchy(ExpressionHierarchy expr)
     {
-        ConceptRoot nucleus = expr.Concepts.Nucleus;
-        string nucleusQuery = nucleus switch
-        {
-            ConceptRootAll _ => $"select id from {DbName}.Concepts",
-            ConceptRootIdentifier identifier => injector.With(new Dictionary<string, object> { ["nucleus"] = identifier.Identifier },
-                (p) => $"select id from {DbName}.Concepts where code = @{p["nucleus"]}").Item1,
-            ConceptRootExpr exprRoot => $"{BuildSubquery(exprRoot.Expr)}",
-            _ => throw new ArgumentException("Invalid concept root type")
-        };
+        // ConceptRoot nucleus = expr.Concepts.Nucleus;
+        string nucleusQuery = BuildSql(expr.Expression);
 
-        var b = expr.Concepts.Hierarchy == RelationshipModifier.DescendantOrSelf;
-        string expandedQuery = expr.Concepts.Hierarchy switch
+        string expandedQuery = expr.Modifier switch
         {
-            RelationshipModifier.Descendant => $"select descendant_id as id from {DbName}.Hierarchy where ancestor_id in ({nucleusQuery})",
-            RelationshipModifier.DescendantOrSelf => $"select descendant_id as id from {DbName}.Hierarchy where ancestor_id in ({nucleusQuery}) UNION {nucleusQuery}",
-            RelationshipModifier.Ancestor => $"select ancestor_id as id from {DbName}.Hierarchy where descendant_id in ({nucleusQuery})",
-            RelationshipModifier.AncestorOrSelf => $"select ancestor_id as id from {DbName}.Hierarchy where descendant_id in ({nucleusQuery}) UNION {nucleusQuery}",
+            RelationshipModifier.Descendant => $"select descendant_id as id from {DbName}.MaterializedHierarchy where ancestor_id in ({nucleusQuery})",
+            RelationshipModifier.DescendantOrSelf => $"select descendant_id as id from {DbName}.MaterializedHierarchy where ancestor_id in ({nucleusQuery}) UNION {nucleusQuery}",
+            RelationshipModifier.Ancestor => $"select ancestor_id as id from {DbName}.MaterializedHierarchy where descendant_id in ({nucleusQuery})",
+            RelationshipModifier.AncestorOrSelf => $"select ancestor_id as id from {DbName}.MaterializedHierarchy where descendant_id in ({nucleusQuery}) UNION {nucleusQuery}",
             _ => nucleusQuery
         };
 
-        var conditions = expr.Constraint != null ? BuildSqlConstraint(expr.Constraint) : "";
-        var query = $@"
-            select id from (
-                {expandedQuery}
-            ) as parent
-            {(conditions.Length > 0 ? $"where {conditions}" : string.Empty)}";
+        var query = $@" select id from  ({expandedQuery}) as parent";
 
+        return query;
+    }
+
+    public string BuildSqlExpressionConstant(ExpressionConstant expr)
+    {
+        return injector.With(new Dictionary<string, object> { ["constant"] = expr.Code },
+           (p) => @$" select id from  {DbName}.Concepts where code=@{p["constant"]}").Item1;
+    }
+
+
+    public string BuildSqlExpressionConstraint(ExpressionConstraint expr)
+    {
+        var query = BuildSqlConstraint(expr.Constraint);
+        // var query = $@" select id from  {DbName}.Concepts as parent where {conditions}";
+        // return query;
         return query;
     }
 }
