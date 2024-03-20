@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Sprache;
 using SqlParser.Tokens;
 
@@ -38,6 +39,10 @@ public class QueryBuilder
     public string Build(Expression expr)
     {
         var restructuredExpr = expr.RestructureForQuery();
+        var json = JsonSerializer.Serialize(restructuredExpr);
+        Console.WriteLine(json);
+
+
         return $"SELECT * FROM {DbName}.Concepts WHERE id IN ({BuildSql(restructuredExpr, "Start")})";
     }
 
@@ -45,6 +50,8 @@ public class QueryBuilder
     {
         return expr switch
         {
+            ExpressionHierarchy constant => BuildSqlExpressionHierarchy(constant, context),
+            ExpressionConstant constant => BuildSqlExpressionConstant(constant, context),
             ExpressionConstraint constraint => BuildSqlExpressionConstraint(constraint, context),
             SegregatedConjunction segregatedConjunction => BuildSqlSegregatedConjunction(segregatedConjunction, context),
             SegregatedDisjunction segregatedDisjunction => BuildSqlSegregatedDisjunction(segregatedDisjunction, context),
@@ -52,7 +59,7 @@ public class QueryBuilder
         };
     }
 
-        private string BuildSqlSegregatedConjunction(SegregatedConjunction segregatedConjunction, string context)
+    private string BuildSqlSegregatedConjunction(SegregatedConjunction segregatedConjunction, string context)
     {
         var hierarchySubqueries = segregatedConjunction.HierarchyParts.Select(part => BuildSql(part, "Start")).ToList();
         var hierarchyQuery = hierarchySubqueries.Any() ? $"({string.Join(" INTERSECT ", hierarchySubqueries)})" : $"SELECT id FROM {DbName}.Concepts";
@@ -75,34 +82,38 @@ public class QueryBuilder
             : logicalQuery;
     }
 
-private string BuildSqlLogicalParts(List<Expression> logicalParts, string logicalOperator)
-{
-    var conditions = logicalParts.Select(part => BuildSqlLogicalPart(part)).ToList();
-    return $"({string.Join($" {logicalOperator} ", conditions)})";
-}
-
-private string BuildSqlLogicalPart(Expression part)
-{
-    return part switch
+    private string BuildSqlLogicalParts(List<Expression> logicalParts, string logicalOperator)
     {
-        ExpressionConstraint constraint => $"EXISTS ({BuildSqlConstraint(constraint.Constraint)} AND m0.concept_id = parent.id)",
-        SegregatedConjunction segregatedConjunction => BuildSqlLogicalParts(segregatedConjunction.LogicalParts, "AND"),
-        SegregatedDisjunction segregatedDisjunction => BuildSqlLogicalParts(segregatedDisjunction.LogicalParts, "OR"),
-        _ => throw new NotImplementedException()
-    };
-}
+        var conditions = logicalParts.Select(part => BuildSqlLogicalPart(part)).ToList();
+        return $"({string.Join($" {logicalOperator} ", conditions)})";
+    }
+
+    private string BuildSqlLogicalPart(Expression part)
+    {
+        return part switch
+        {
+            ExpressionConstant constant => $"EXISTS ({BuildSqlExpressionConstant(constant, "Logical")})",
+            ExpressionConstraint constraint => $"EXISTS ({BuildSqlExpressionConstraint(constraint, "Logical")})",
+            SegregatedConjunction segregatedConjunction => BuildSqlLogicalParts(segregatedConjunction.LogicalParts, "AND"),
+            SegregatedDisjunction segregatedDisjunction => BuildSqlLogicalParts(segregatedDisjunction.LogicalParts, "OR"),
+            _ => throw new NotImplementedException()
+        };
+    }
 
 
     private string BuildSqlExpressionConstraint(ExpressionConstraint constraint, string context)
     {
-        var query = BuildSqlConstraint(constraint.Constraint);
+        var query = constraint.Constraint switch
+        {
+            ConstraintProperty simple => BuildSqlConstraintOnProperty(simple),
+            ConstraintDesignation designation => BuildSqlConstraintOnDesignation(designation),
+            _ => throw new NotImplementedException(),
+        };
 
         return context == "Start"
             ? $"SELECT id FROM {DbName}.Concepts AS parent WHERE EXISTS ({query})"
             : query;
     }
- 
-
 
 
     private string BuildSubquery(Expression expr)
@@ -110,19 +121,7 @@ private string BuildSqlLogicalPart(Expression part)
         return BuildSql(expr, "Start");
     }
 
-    private string BuildSqlExpressionConjunction(List<Expression> exprs)
-    {
-        var subqueries = exprs.Select(BuildSubquery).ToList();
-        return string.Join(" INTERSECT ", subqueries);
-    }
-
-    private string BuildSqlExpressionDisjunction(List<Expression> exprs)
-    {
-        var subqueries = exprs.Select(BuildSubquery).ToList();
-        return string.Join(" UNION ", subqueries);
-    }
-
-    private string BuildSqlConstraintSimple(ConstraintProperty constraint)
+    private string BuildSqlConstraintOnProperty(ConstraintProperty constraint)
     {
         var constraintValue = constraint.Value switch
         {
@@ -166,17 +165,18 @@ private string BuildSqlLogicalPart(Expression part)
         }
 
         var sql = $@"
-        select m0.concept_id as id from 
+        select 1 from 
             {string.Join("\n", joinConditions)}
             WHERE
              {string.Join(" AND ", whereConditions)}
+            AND m0.concept_id = parent.id
     ";
 
         return sql;
     }
 
 
-    private string BuildSqlConstraintDesignation(ConstraintDesignation designation)
+    private string BuildSqlConstraintOnDesignation(ConstraintDesignation designation)
     {
         return injector.With(new Dictionary<string, object>
         {
@@ -185,32 +185,18 @@ private string BuildSqlLogicalPart(Expression part)
             ["useCode"] = designation.UseCode!,
             ["value"] = string.Format("%{0}%", designation.Value)
         }.Where(kv => kv.Value is not null).ToDictionary(), (p) => $@"
-        select concept_id as id from {DbName}.ConceptDesignations m0
+        select 1 from {DbName}.ConceptDesignations m0
             where 
                 {(designation.Language != null ? "and language = @language" : "")}
                 {(designation.UseSystem != null ? "and use_system = @useSystem" : "")}
                 {(designation.UseCode != null ? "and use_value = @useCode" : "")}
                 {((designation.Language != null || designation.UseSystem != null || designation.UseCode != null)
                     ? " and " : "")} value LIKE @{p["value"]}
+            AND m0.concept_id = parent.id
 
         ").Item1;
     }
-
-    private string BuildSqlConstraint(Constraint constraint)
-    {
-        return constraint switch
-        {
-            ConstraintProperty simple => BuildSqlConstraintSimple(simple),
-            ConstraintDesignation designation => BuildSqlConstraintDesignation(designation),
-            _ => throw new NotImplementedException(),
-        };
-    }
-
-    
-
-
-
-    public string BuildSqlExpressionHierarchy(ExpressionHierarchy expr)
+    public string BuildSqlExpressionHierarchy(ExpressionHierarchy expr, string _context)
     {
         // ConceptRoot nucleus = expr.Concepts.Nucleus;
         string nucleusQuery = BuildSql(expr.Expression, "Start");
@@ -229,18 +215,11 @@ private string BuildSqlLogicalPart(Expression part)
         return query;
     }
 
-    public string BuildSqlExpressionConstant(ExpressionConstant expr)
+    public string BuildSqlExpressionConstant(ExpressionConstant expr, string context)
     {
-        return injector.With(new Dictionary<string, object> { ["constant"] = expr.Code },
-           (p) => @$" select id from  {DbName}.Concepts where code=@{p["constant"]}").Item1;
+         return injector.With(new Dictionary<string, object> { ["constant"] = expr.Code },
+             (p) => $@"SELECT id FROM {DbName}.Concepts AS parent WHERE code=@{p["constant"]}
+             {(context == "Start" ? "and m0.id=parent.id" : "")}").Item1;
     }
 
-
-    public string BuildSqlExpressionConstraint(ExpressionConstraint expr)
-    {
-        var query = BuildSqlConstraint(expr.Constraint);
-        // var query = $@" select id from  {DbName}.Concepts as parent where {conditions}";
-        // return query;
-        return query;
-    }
 }

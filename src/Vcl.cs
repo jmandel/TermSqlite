@@ -20,6 +20,7 @@ using System.Text.Encodings.Web;
 [JsonDerivedType(typeof(SegregatedDisjunction), typeDiscriminator: "SegregatedDisjunctiond")]
 [JsonDerivedType(typeof(ExpressionConstraint), typeDiscriminator: "ExpressionConstraint")]
 [JsonDerivedType(typeof(ExpressionConstant), typeDiscriminator: "ExpressionConstant")]
+[JsonDerivedType(typeof(ExpressionHierarchy), typeDiscriminator: "ExpressionHierarchy")]
 
 public abstract record Expression
 {
