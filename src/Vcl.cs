@@ -21,6 +21,8 @@ using System.Text.Encodings.Web;
 [JsonDerivedType(typeof(ExpressionConstraint), typeDiscriminator: "ExpressionConstraint")]
 [JsonDerivedType(typeof(ExpressionConstant), typeDiscriminator: "ExpressionConstant")]
 [JsonDerivedType(typeof(ExpressionHierarchy), typeDiscriminator: "ExpressionHierarchy")]
+[JsonDerivedType(typeof(ExpressionConjunction), typeDiscriminator: "ExpressionConjunction")]
+[JsonDerivedType(typeof(ExpressionDisjunction), typeDiscriminator: "ExpressionDisjunction")]
 
 public abstract record Expression
 {
@@ -41,7 +43,8 @@ public abstract record Expression
     }
 
 }
-public record SegregatedConjunction(List<Expression> HierarchyParts, List<Expression> LogicalParts) : Expression{
+public record SegregatedConjunction(List<Expression> HierarchyParts, List<Expression> LogicalParts) : Expression
+{
 
     public override string ToString()
     {
@@ -53,7 +56,8 @@ public record SegregatedConjunction(List<Expression> HierarchyParts, List<Expres
 
 }
 
-public record SegregatedDisjunction(List<Expression> HierarchyParts, List<Expression> LogicalParts) : Expression{
+public record SegregatedDisjunction(List<Expression> HierarchyParts, List<Expression> LogicalParts) : Expression
+{
     public override string ToString()
     {
         string hPartsList = string.Join(", ", HierarchyParts.Select(p => p.ToString()));
@@ -171,6 +175,11 @@ public record ExpressionConstant(string Code) : Expression;
 
 public record ExpressionHierarchy(RelationshipModifier Modifier, Expression Expression) : Expression
 {
+    public override Expression RestructureForQuery()
+    {
+        return this with { Expression = Expression.RestructureForQuery() };
+    }
+
     public override Expression Simplify()
     {
         var simplifiedExpression = Expression.Simplify();
@@ -218,8 +227,7 @@ public record ConstraintProperty : Constraint
 
 public record ConstraintDesignation(string? Language = null, string? UseSystem = null, string? UseCode = null, string? Modifier = null, string? Value = null) : Constraint
 {
-    public ConstraintDesignation(string[][] vs) : this(
-)
+    public ConstraintDesignation(string[][] vs) : this()
     {
     }
 
@@ -235,6 +243,7 @@ public enum ConstraintModifier
 
 [JsonPolymorphic]
 [JsonDerivedType(typeof(ValueConstant), typeDiscriminator: "ValueConstant")]
+[JsonDerivedType(typeof(ValueExpr), typeDiscriminator: "ValueExpr")]
 public abstract record Value;
 
 public record ValueConstant(object Constant) : Value;

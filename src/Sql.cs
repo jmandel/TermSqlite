@@ -63,10 +63,11 @@ public class QueryBuilder
     {
         var hierarchySubqueries = segregatedConjunction.HierarchyParts.Select(part => BuildSql(part, "Start")).ToList();
         var hierarchyQuery = hierarchySubqueries.Any() ? $"({string.Join(" INTERSECT ", hierarchySubqueries)})" : $"SELECT id FROM {DbName}.Concepts";
-        var logicalQuery = BuildSqlLogicalParts(segregatedConjunction.LogicalParts, "AND");
+        var logicalParts = segregatedConjunction.LogicalParts;
+        var logicalQuery = BuildSqlLogicalParts(logicalParts, "AND");
 
         return context == "Start"
-            ? $"SELECT id FROM ({hierarchyQuery}) AS parent WHERE {logicalQuery}"
+            ? $"SELECT id FROM ({hierarchyQuery}) AS parent {(logicalParts.Count >0 ? $"WHERE {logicalQuery}" : "")}"
             : logicalQuery;
     }
 
@@ -75,10 +76,11 @@ public class QueryBuilder
     {
         var hierarchySubqueries = segregatedDisjunction.HierarchyParts.Select(part => BuildSql(part, "Start")).ToList();
         var hierarchyQuery = hierarchySubqueries.Any() ? $"({string.Join(" UNION ", hierarchySubqueries)})" : $"SELECT id FROM {DbName}.Concepts";
-        var logicalQuery = BuildSqlLogicalParts(segregatedDisjunction.LogicalParts, "OR");
+        var logicalParts = segregatedDisjunction.LogicalParts;
+        var logicalQuery = BuildSqlLogicalParts(logicalParts, "OR");
 
         return context == "Start"
-            ? $"SELECT id FROM ({hierarchyQuery}) AS parent WHERE {logicalQuery}"
+            ? $"SELECT id FROM ({hierarchyQuery}) AS parent {(logicalParts.Count >0 ? $"WHERE {logicalQuery}" : "")}"
             : logicalQuery;
     }
 
@@ -217,9 +219,9 @@ public class QueryBuilder
 
     public string BuildSqlExpressionConstant(ExpressionConstant expr, string context)
     {
-         return injector.With(new Dictionary<string, object> { ["constant"] = expr.Code },
-             (p) => $@"SELECT id FROM {DbName}.Concepts AS parent WHERE code=@{p["constant"]}
-             {(context == "Start" ? "and m0.id=parent.id" : "")}").Item1;
+        return injector.With(new Dictionary<string, object> { ["constant"] = expr.Code },
+            (p) => $@"SELECT id FROM {DbName}.Concepts AS parent WHERE code=@{p["constant"]}
+             {(context == "Start" ? "" :  "and m0.id=parent.id" )}").Item1;
     }
 
 }
