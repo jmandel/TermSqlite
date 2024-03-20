@@ -11,112 +11,154 @@ using Sprache;
 using NUnit.Framework;
 using FluentAssertions;
 using SqlParser;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.Encodings.Web;
+
+[JsonPolymorphic]
+[JsonDerivedType(typeof(SegregatedConjunction), typeDiscriminator: "SegregatedConjunction")]
+[JsonDerivedType(typeof(SegregatedDisjunction), typeDiscriminator: "SegregatedDisjunctiond")]
+[JsonDerivedType(typeof(ExpressionConstraint), typeDiscriminator: "ExpressionConstraint")]
+[JsonDerivedType(typeof(ExpressionConstant), typeDiscriminator: "ExpressionConstant")]
 
 public abstract record Expression
 {
     public virtual Expression Simplify() => this;
+    public virtual Expression RestructureForQuery() => this;
 
-
-}
-
-public abstract record ExpressionLogical(List<Expression> Parts, Expression? Nucleus = null) : Expression
-{
-    protected static bool HasHierarchyBelow(Expression expression)
+    protected static bool ContainsHierarchy(Expression expression)
     {
         return expression switch
         {
             ExpressionHierarchy => true,
-            ExpressionLogical logical => logical.Parts.Any(HasHierarchyBelow),
+            ExpressionConjunction conjunction => conjunction.Parts.Any(ContainsHierarchy),
+            ExpressionDisjunction disjunction => disjunction.Parts.Any(ContainsHierarchy),
+            SegregatedConjunction segregatedConjunction => segregatedConjunction.HierarchyParts.Any() || segregatedConjunction.LogicalParts.Any(ContainsHierarchy),
+            SegregatedDisjunction segregatedDisjunction => segregatedDisjunction.HierarchyParts.Any() || segregatedDisjunction.LogicalParts.Any(ContainsHierarchy),
             _ => false
         };
     }
-    public override Expression Simplify()
+
+}
+public record SegregatedConjunction(List<Expression> HierarchyParts, List<Expression> LogicalParts) : Expression{
+
+    public override string ToString()
     {
-        var simplifiedParts = Parts.Select(p => p.Simplify()).ToList();
+        string hPartsList = string.Join(", ", HierarchyParts.Select(p => p.ToString()));
+        string lPartsList = string.Join(", ", LogicalParts.Select(p => p.ToString()));
+        return $"\nSegregatedConjunction {{\n HierarchyParts = [{hPartsList}]\n  LogicalParts = [{lPartsList}] }}";
+    }
+
+
+}
+
+public record SegregatedDisjunction(List<Expression> HierarchyParts, List<Expression> LogicalParts) : Expression{
+    public override string ToString()
+    {
+        string hPartsList = string.Join(", ", HierarchyParts.Select(p => p.ToString()));
+        string lPartsList = string.Join(", ", LogicalParts.Select(p => p.ToString()));
+        return $"SegregatedDisjunction {{\n HierarchyParts = [{hPartsList}]\n  LogicalParts = [{lPartsList}] }}";
+    }
+
+
+}
+
+public record ExpressionConjunction(List<Expression> Parts) : Expression
+{
+    public override Expression RestructureForQuery()
+    {
+        var hierarchyParts = new List<Expression>();
         var logicalParts = new List<Expression>();
 
-        foreach (var part in simplifiedParts)
+        foreach (var part in Parts)
         {
-            if (part.GetType() == GetType())
+            var restructuredPart = part.RestructureForQuery();
+            if (ContainsHierarchy(restructuredPart))
             {
-                var logical = (ExpressionLogical)part;
-                logicalParts.AddRange(logical.Parts);
-                if (logical.Nucleus != null)
-                {
-                    logicalParts.Add(logical.Nucleus);
-                }
+                hierarchyParts.Add(restructuredPart);
             }
             else
             {
-                logicalParts.Add(part);
+                logicalParts.Add(restructuredPart);
             }
         }
 
-        if (Nucleus != null) {
-            logicalParts.Add(Nucleus);
-        }
-
-        return CreateExpression(logicalParts, null);
+        return new SegregatedConjunction(hierarchyParts, logicalParts);
     }
 
-    protected abstract ExpressionLogical CreateExpression(List<Expression> parts, Expression? nucleus);
+    public override Expression Simplify()
+    {
+        var simplifiedParts = Parts.Select(p => p.Simplify()).ToList();
+        var conjunctionParts = new List<Expression>();
+        foreach (var part in simplifiedParts)
+        {
+            if (part is ExpressionConjunction conjunction)
+            {
+                conjunctionParts.AddRange(conjunction.Parts);
+            }
+            else
+            {
+                conjunctionParts.Add(part);
+            }
+        }
+        return new ExpressionConjunction(conjunctionParts);
+
+
+    }
+    public override string ToString()
+    {
+        string partsList = string.Join(", ", Parts.Select(p => p.ToString()));
+        return $"ExpressionConjunction {{ Parts = [{partsList}] }}";
+    }
+
+
+}
+
+public record ExpressionDisjunction(List<Expression> Parts) : Expression
+{
+    public override Expression Simplify()
+    {
+        var simplifiedParts = Parts.Select(p => p.Simplify()).ToList();
+        var disjunctionParts = new List<Expression>();
+        foreach (var part in simplifiedParts)
+        {
+            if (part is ExpressionDisjunction disjunction)
+            {
+                disjunctionParts.AddRange(disjunction.Parts);
+            }
+            else
+            {
+                disjunctionParts.Add(part);
+            }
+        }
+        return new ExpressionDisjunction(disjunctionParts);
+    }
+    public override Expression RestructureForQuery()
+    {
+        var hierarchyParts = new List<Expression>();
+        var logicalParts = new List<Expression>();
+
+        foreach (var part in Parts)
+        {
+            var restructuredPart = part.RestructureForQuery();
+            if (ContainsHierarchy(restructuredPart))
+            {
+                hierarchyParts.Add(restructuredPart);
+            }
+            else
+            {
+                logicalParts.Add(restructuredPart);
+            }
+        }
+
+        return new SegregatedDisjunction(hierarchyParts, logicalParts);
+    }
+
 
     public override string ToString()
     {
         string partsList = string.Join(", ", Parts.Select(p => p.ToString()));
-        return $"{GetType().Name} {{ Nucleus = {Nucleus} , Parts = [{string.Join(" . " , partsList)}]}}";
-    }
-}
-
-public record ExpressionConjunction(List<Expression> Parts, Expression? Nucleus = null) : ExpressionLogical(Parts, Nucleus)
-{
-    public override Expression Simplify()
-    {
-
-        (var simplifiedParts, _) = (ExpressionConjunction)base.Simplify();
-
-        var hierarchyParts = simplifiedParts.Where(p => HasHierarchyBelow(p)).ToList();
-
-        Expression? nucleus = null;
-
-        if (hierarchyParts.Count == 0)
-        {
-            nucleus = simplifiedParts.FirstOrDefault();
-            if (nucleus != null)
-            {
-                simplifiedParts.Remove(nucleus);
-            }
-        }
-        else if (hierarchyParts.Count == 1)
-        {
-            nucleus = hierarchyParts[0];
-            simplifiedParts.Remove(nucleus);
-        }
-
-        return CreateExpression(simplifiedParts, nucleus);
-    }
-
-
-    protected override ExpressionLogical CreateExpression(List<Expression> parts, Expression? nucleus)
-    {
-        return new ExpressionConjunction(parts, nucleus);
-   }
-    public override string ToString()
-    {
-        return $"Conjunction {base.ToString()}";
-    }
-
-}
-
-public record ExpressionDisjunction(List<Expression> Parts, Expression? Nucleus = null) : ExpressionLogical(Parts, Nucleus)
-{
-    protected override ExpressionLogical CreateExpression(List<Expression> parts, Expression? nucleus)
-    {
-        return new ExpressionDisjunction(parts, nucleus);
-    }
-    public override string ToString()
-    {
-        return $"Disjunction {base.ToString()}";
+        return $"ExpressionDisjunction {{ Parts = [{partsList}] }}";
     }
 
 
@@ -137,10 +179,9 @@ public record ExpressionHierarchy(RelationshipModifier Modifier, Expression Expr
         }
         return this with { Expression = simplifiedExpression };
     }
-
-
-
 }
+
+
 
 public enum RelationshipModifier
 {
@@ -153,6 +194,9 @@ public enum RelationshipModifier
 
 
 
+[JsonPolymorphic]
+[JsonDerivedType(typeof(ConstraintProperty), typeDiscriminator: "ConstraintProperty")]
+[JsonDerivedType(typeof(ConstraintDesignation), typeDiscriminator: "ConstraintDesignation")]
 public abstract record Constraint;
 public record ConstraintProperty : Constraint
 {
@@ -188,6 +232,8 @@ public enum ConstraintModifier
     MemberOf
 }
 
+[JsonPolymorphic]
+[JsonDerivedType(typeof(ValueConstant), typeDiscriminator: "ValueConstant")]
 public abstract record Value;
 
 public record ValueConstant(object Constant) : Value;
@@ -388,10 +434,23 @@ public class VclParserTests
         var result = VCLParser.Expr.Parse(input);
         // Console.WriteLine(result);
 
-        string input2 = "d=4;(a=1,b=2);c=3";
+        string input2 = "a=1,b=2;c=3";
 
         Expression result2 = VCLParser.Expr.Parse(input2);
+
         Console.WriteLine($"r2 {result2}");
+        Expression result3 = result2.RestructureForQuery();
+        Console.WriteLine($"r3 {result3}");
+        var options = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            ReferenceHandler = ReferenceHandler.IgnoreCycles,
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+        options.Converters.Add(new JsonStringEnumConverter());
+        var json = JsonSerializer.Serialize(result3, options);
+        Console.WriteLine(json);
+
 
         var b = new QueryBuilder();
         var sql = b.Build(result2);
