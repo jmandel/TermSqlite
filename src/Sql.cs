@@ -125,10 +125,11 @@ public class QueryBuilder
 
     private string BuildSqlConstraintOnProperty(ConstraintProperty constraint)
     {
+        var isSubquery = constraint.Value is ValueExpression;
         var constraintValue = constraint.Value switch
         {
             ValueConstant constant => constant.Constant.ToString(),
-            // ValueExpr expr => BuildSubquery(expr.Expr),
+            ValueExpression expr => BuildSubquery(expr.Expr),
             _ => throw new ArgumentException("Invalid constraint value type")
         };
 
@@ -158,11 +159,13 @@ public class QueryBuilder
 
             whereConditions.Add($" m{i}.property_code = @{propertyCodeParamResult[propertyCodeParam]}");
 
-
             if (i == constraint.OnPath.Count - 1)
             {
-                whereConditions.Add($" m{i}.target_value = @{constraintTargetParamResult["constraintTarget"]}");
+                whereConditions.Add($@"
+                    {(isSubquery ? $" m{i}.target_concept_id in ({constraintValue})" : $"m{i}.target_value  = @{constraintTargetParamResult["constraintTarget"]}")} 
+                ");
             }
+
 
         }
 
@@ -220,8 +223,8 @@ public class QueryBuilder
     public string BuildSqlExpressionConstant(ExpressionConstant expr, string context)
     {
         return injector.With(new Dictionary<string, object> { ["constant"] = expr.Code },
-            (p) => $@"SELECT id FROM {DbName}.Concepts AS parent WHERE code=@{p["constant"]}
-             {(context == "Start" ? "" :  "and m0.id=parent.id" )}").Item1;
+            (p) => $@"SELECT id FROM {DbName}.Concepts AS const_pos WHERE code=@{p["constant"]}
+             {(context == "Start" ? "" :  "and const_pos.id=parent.id" )}").Item1;
     }
 
 }

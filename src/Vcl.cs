@@ -14,6 +14,8 @@ using SqlParser;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Encodings.Web;
+using System.Diagnostics;
+using FluentAssertions.Equivalency;
 
 [JsonPolymorphic]
 [JsonDerivedType(typeof(SegregatedConjunction), typeDiscriminator: "SegregatedConjunction")]
@@ -169,7 +171,39 @@ public record ExpressionDisjunction(List<Expression> Parts) : Expression
 
 }
 
-public record ExpressionConstraint(Constraint Constraint) : Expression;
+public record ExpressionConstraint(Constraint Constraint) : Expression
+{
+    public override Expression Simplify()
+    {
+        return new ExpressionConstraint(Constraint switch
+        {
+            ConstraintProperty property => property with
+            {
+                Value = property.Value switch
+                {
+                    ValueExpression valueExpression => new ValueExpression(valueExpression.Expr.Simplify()),
+                    _ => property.Value
+                }
+            },
+            ConstraintDesignation designation => designation,
+            _ => throw new NotSupportedException($"Unsupported constraint type: {Constraint.GetType()}")
+        });
+    }
+
+    public override Expression RestructureForQuery()
+    {
+        return new ExpressionConstraint(Constraint switch
+        {
+            ConstraintProperty { Value: ValueExpression valueExpression } property =>
+                property with { Value = new ValueExpression(valueExpression.Expr.RestructureForQuery()) },
+            _ => Constraint
+        });
+    }
+
+
+
+
+}
 
 public record ExpressionConstant(string Code) : Expression;
 
@@ -243,12 +277,12 @@ public enum ConstraintModifier
 
 [JsonPolymorphic]
 [JsonDerivedType(typeof(ValueConstant), typeDiscriminator: "ValueConstant")]
-[JsonDerivedType(typeof(ValueExpr), typeDiscriminator: "ValueExpr")]
+[JsonDerivedType(typeof(ValueExpression), typeDiscriminator: "ValueExpression")]
 public abstract record Value;
 
 public record ValueConstant(object Constant) : Value;
 
-public record ValueExpr(Expression Expr) : Value;
+public record ValueExpression(Expression Expr) : Value;
 
 public class VCLParser
 {
@@ -301,7 +335,7 @@ public class VCLParser
                 from _ in Parse.Char('(')
                 from e in Expr
                 from __ in Parse.Char(')')
-                select new ValueExpr(e)
+                select new ValueExpression(e)
             );
 
     private static readonly Parser<List<string>> PropertyPath =
@@ -334,15 +368,9 @@ public class VCLParser
             from path in PropertyPath
             from modifier in ParseConstraintModifier.Optional()
             from _ in Ws(Parse.Char('='))
-            from value in ValueConstant //TODO or Value?
+            from value in Value 
             select new ConstraintProperty(path, value, modifier.IsEmpty ? null : modifier.Get()) as Constraint
         );
-
-
-    //TODO excise this now that we don't managed Disjunction/Conjunction within constraints
-    private static readonly Parser<Constraint> Constraints =
-        from first in Constraint
-        select first;
 
 
     // TODO add back support for suffix paths?
@@ -354,7 +382,7 @@ public class VCLParser
             from __ in Parse.Char(')')
             select e
         ).Or(
-            from constraint in Constraints
+            from constraint in Constraint
             select new ExpressionConstraint(
                 constraint
             )
@@ -363,7 +391,7 @@ public class VCLParser
             select value switch
             {
                 ValueConstant(string c) => new ExpressionConstant(c),
-                ValueExpr(var e) => e,
+                ValueExpression(var e) => e,
                 _ => throw new Exception("Unexpected value type in expression")
             }
         ))
