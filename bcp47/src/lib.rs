@@ -1,5 +1,7 @@
 wit_bindgen::generate!({
     world: "fhir-terminology-engine",
+    additional_derives: [Clone, PartialEq, Eq, Ord, PartialOrd],
+
 });
 
 struct MyHost;
@@ -32,55 +34,11 @@ impl Guest for MyHost {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub struct Concept {
-    pub code: String,
-    pub properties: Vec<Property>,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Property {
-    pub code: String,
-    pub value: ValueX,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-pub enum ValueX {
-    ValueString(String),
-    ValueCode(String),
-    ValueCoding(Coding),
-    ValueDecimal(String),
-}
-
-#[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord)]
-pub struct Coding {
-    pub system: Option<String>,
-    pub code: Option<String>,
-    pub display: Option<String>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Ord, PartialOrd)]
-pub struct ParseDetail {
-    pub severity: Severity,
-    pub key: String,
-    pub value: ValueX,
-}
-
-#[derive(Debug, Eq, PartialEq, Clone, Ord, PartialOrd)]
-pub enum Severity {
-    Error,
-    Warning,
-    Information,
-    Success,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct ParseResult {
-    pub details: Vec<ParseDetail>,
-    pub concept: Option<Concept>,
-}
+export!(MyHost);
 
 mod mock_terminology_db {
+    use self::fhirtx::spec::terminology_db::Concept;
+
     use super::*;
 
     pub trait TerminologyDb {
@@ -119,7 +77,9 @@ use std::iter::Peekable;
 use std::str::Split;
 
 use exports::fhirtx::spec::terminology_engine::Guest;
-use fhirtx::spec::data_types;
+use fhirtx::spec::data_types::{
+    self, Concept, ParseDetail, ParseResult, Property, Severity, ValueX,
+};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct LanguageTag {
@@ -176,7 +136,6 @@ impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
         self.parse_extensions(&mut details);
         self.parse_private_use(&mut details);
 
-        // take only unique details
         details.sort();
         details.dedup();
 
@@ -239,11 +198,11 @@ impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
     }
 
     fn parse_extlang(&mut self, details: &mut Vec<ParseDetail>) {
-        if let Some(extlang) = self.parts.peek() {
+        if let Some(extlang) = self.parts.peek().cloned() {
             if extlang.len() == 3 && extlang.chars().all(char::is_alphabetic) {
                 let extlang_str = extlang.to_string();
+                self.parts.next();
                 if let Some(extlang_concept) = self.db.lookup(extlang_str.clone(), None) {
-                    self.parts.next();
                     self.language_tag.extlang.push(extlang_str);
                 } else {
                     details.push(ParseDetail {
@@ -354,10 +313,6 @@ impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
         if let Some(x) = self.parts.peek() {
             if *x == "x" {
                 self.parts.next();
-                println!(
-                    "PRIVATE USE: {:?}",
-                    self.parts.clone().collect::<Vec<&str>>()
-                );
                 let mut private_use_parts = Vec::new();
                 while let Some(private_use_part) = self.parts.next() {
                     if private_use_part.len() >= 1 && private_use_part.len() <= 8 {
@@ -684,7 +639,6 @@ mod tests {
 
         let code = "en-US-u".to_string();
         let result = parse(code.clone(), None, &db);
-        println!("baesed {:#?}", result);
         let expected = ParseResult {
             details: vec![ParseDetail {
                 severity: Severity::Error,
