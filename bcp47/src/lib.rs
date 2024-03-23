@@ -12,19 +12,8 @@ impl Guest for MyHost {
         code: _rt::String,
         properties: Option<_rt::Vec<_rt::String>>,
     ) -> data_types::ParseResult {
-        let mut db = mock_terminology_db::MockTerminologyDb::new();
-        db.insert(create_concept("en", "language", Some("English")));
-        db.insert(create_concept("US", "region", Some("United States")));
-        db.insert(create_concept("u", "extension", Some("Extension")));
-        db.insert(create_concept("co", "extension", Some("Collation")));
-        db.insert(create_concept(
-            "phonebk",
-            "extension",
-            Some("Phonebook sort order"),
-        ));
-
         let code = "en-US-u-co-phonebk-x-private".to_string();
-        let result = parse(code.clone(), None, &db);
+        let result = parse(code.clone(), None, &HostTerminology);
         todo!()
     }
 
@@ -35,17 +24,22 @@ impl Guest for MyHost {
 }
 
 export!(MyHost);
+pub trait TerminologyDbLookup {
+    fn lookup(&self, code: &str, properties: Option<&[String]>) -> Option<Concept>;
+}
+
+struct HostTerminology;
+impl TerminologyDbLookup for HostTerminology {
+    fn lookup(&self, code: &str, properties: Option<&[String]>) -> Option<Concept> {
+        terminology_db::lookup(code, properties)
+    }
+}
+static terminology_db: HostTerminology = HostTerminology;
 
 mod mock_terminology_db {
     use self::fhirtx::spec::terminology_db::Concept;
 
     use super::*;
-
-    pub trait TerminologyDb {
-        fn lookup(&self, code: String, properties: Option<Vec<String>>) -> Option<Concept>;
-        fn subsumes(&self, ancestor: String, descendant: String) -> bool;
-    }
-
     pub struct MockTerminologyDb {
         concepts: Vec<Concept>,
     }
@@ -62,13 +56,9 @@ mod mock_terminology_db {
         }
     }
 
-    impl TerminologyDb for MockTerminologyDb {
-        fn lookup(&self, code: String, _properties: Option<Vec<String>>) -> Option<Concept> {
+    impl TerminologyDbLookup for MockTerminologyDb {
+        fn lookup(&self, code: &str, _properties: Option<&[String]>) -> Option<Concept> {
             self.concepts.iter().find(|c| c.code == code).cloned()
-        }
-
-        fn subsumes(&self, _ancestor: String, _descendant: String) -> bool {
-            unimplemented!()
         }
     }
 }
@@ -80,6 +70,8 @@ use exports::fhirtx::spec::terminology_engine::Guest;
 use fhirtx::spec::data_types::{
     self, Concept, ParseDetail, ParseResult, Property, Severity, ValueX,
 };
+use fhirtx::spec::terminology_db;
+
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct LanguageTag {
@@ -98,14 +90,14 @@ pub struct Extension {
     pub parts: Vec<String>,
 }
 
-struct Parser<'a, T: mock_terminology_db::TerminologyDb> {
+struct Parser<'a, T: TerminologyDbLookup> {
     parts: Peekable<Split<'a, char>>,
     code: &'a str,
     db: &'a T,
     language_tag: LanguageTag,
 }
 
-impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
+impl<'a, T: TerminologyDbLookup> Parser<'a, T> {
     fn new(input: &'a str, db: &'a T) -> Self {
         Parser {
             parts: input.split('-').peekable(),
@@ -158,7 +150,7 @@ impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
                 && language.len() <= 3
                 && language.chars().all(char::is_alphabetic)
             {
-                if let Some(language_concept) = self.db.lookup(language.to_string(), None) {
+                if let Some(language_concept) = self.db.lookup(language, None) {
                     self.language_tag.language = language.to_string();
                 } else {
                     details.push(ParseDetail {
@@ -172,7 +164,7 @@ impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
                 // do nothing
             } else if language.len() >= 5 && language.len() <= 8 {
                 // Registered language subtag
-                if let Some(language_concept) = self.db.lookup(language.to_string(), None) {
+                if let Some(language_concept) = self.db.lookup(language, None) {
                     self.language_tag.language = language.to_string();
                 } else {
                     details.push(ParseDetail {
@@ -202,7 +194,7 @@ impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
             if extlang.len() == 3 && extlang.chars().all(char::is_alphabetic) {
                 let extlang_str = extlang.to_string();
                 self.parts.next();
-                if let Some(extlang_concept) = self.db.lookup(extlang_str.clone(), None) {
+                if let Some(extlang_concept) = self.db.lookup(&extlang_str, None) {
                     self.language_tag.extlang.push(extlang_str);
                 } else {
                     details.push(ParseDetail {
@@ -219,7 +211,7 @@ impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
         if let Some(script) = self.parts.peek() {
             if script.len() == 4 {
                 let script_str = script.to_string();
-                if let Some(script_concept) = self.db.lookup(script_str.clone(), None) {
+                if let Some(script_concept) = self.db.lookup(&script_str, None) {
                     self.parts.next();
                     self.language_tag.script = Some(script_str);
                 } else {
@@ -239,7 +231,7 @@ impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
                 || (region.len() == 3 && region.chars().all(char::is_numeric))
             {
                 let region_str = region.to_string();
-                if let Some(region_concept) = self.db.lookup(region_str.clone(), None) {
+                if let Some(region_concept) = self.db.lookup(&region_str, None) {
                     self.parts.next();
                     self.language_tag.region = Some(region_str);
                 } else {
@@ -261,7 +253,7 @@ impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
                 || (variant.len() == 4 && variant.chars().next().unwrap().is_numeric())
             {
                 let variant_str = variant.to_string();
-                if let Some(variant_concept) = self.db.lookup(variant_str.clone(), None) {
+                if let Some(variant_concept) = self.db.lookup(&variant_str, None) {
                     self.parts.next();
                     self.language_tag.variants.push(variant_str);
                 } else {
@@ -391,7 +383,7 @@ impl<'a, T: mock_terminology_db::TerminologyDb> Parser<'a, T> {
     }
 }
 
-fn parse<T: mock_terminology_db::TerminologyDb>(
+fn parse<T: TerminologyDbLookup>(
     code: String,
     properties: Option<Vec<String>>,
     db: &T,
@@ -400,7 +392,6 @@ fn parse<T: mock_terminology_db::TerminologyDb>(
     parser.parse()
 }
 
-fn main() {}
 fn create_concept(code: &str, property_type: &str, display: Option<&str>) -> Concept {
     let mut properties = vec![Property {
         code: "type".to_string(),
@@ -421,7 +412,6 @@ fn create_concept(code: &str, property_type: &str, display: Option<&str>) -> Con
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mock_terminology_db::TerminologyDb;
 
     fn assert_parse_result(result: ParseResult, expected: ParseResult) {
         assert_eq!(result.concept, expected.concept);
