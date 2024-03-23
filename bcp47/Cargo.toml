@@ -1,0 +1,14 @@
+[package]
+name = "bcp47"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+opt-level = 'z'
+lto = true
+
+[lib]
+crate-type=["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.22.0"
