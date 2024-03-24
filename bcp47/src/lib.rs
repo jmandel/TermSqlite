@@ -35,7 +35,7 @@ impl TerminologyDbLookup for HostTerminology {
         terminology_db::lookup(code, properties)
     }
 }
-static terminology_db: HostTerminology = HostTerminology;
+static TERMINOLOGY_DB: HostTerminology = HostTerminology;
 
 mod mock_terminology_db {
     use self::fhirtx::spec::terminology_db::Concept;
@@ -69,6 +69,30 @@ use fhirtx::spec::data_types::{
     self, Concept, ParseDetail, ParseResult, Property, Severity, ValueX,
 };
 use fhirtx::spec::terminology_db;
+
+impl ParseError<&str> for ParseDetail {
+    fn from_error_kind(input: &str, kind: nom::error::ErrorKind) -> Self {
+        ParseDetail {
+            severity: Severity::Error,
+            key: "error".to_string(),
+            value: ValueX::ValueString(format!(
+                "Error parsing input: {:?} with kind: {:?}",
+                input, kind
+            )),
+        }
+    }
+
+    fn append(input: &str, kind: nom::error::ErrorKind, other: Self) -> Self {
+        ParseDetail {
+            severity: Severity::Error,
+            key: "error".to_string(),
+            value: ValueX::ValueString(format!(
+                "Error parsing input: {:?} with kind: {:?}",
+                input, kind
+            )),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct LanguageTag {
@@ -152,12 +176,13 @@ pub struct Extension {
     pub parts: Vec<String>,
 }
 
-use nom::bytes::streaming::take_while;
+use nom::bytes::complete::take_while;
 use nom::character::complete::alphanumeric1;
-use nom::combinator::{eof, peek, verify};
-use nom::error::{context, ContextError, Error};
+use nom::combinator::{cut, eof, not, peek, verify};
+use nom::error::{context, ContextError, Error, ParseError};
 use nom::multi::{many1, many_m_n};
 use nom::sequence::terminated;
+use nom::Err;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while_m_n},
@@ -253,31 +278,39 @@ impl<'a, T: TerminologyDbLookup> Parser<'a, T> {
         )(input)
     }
 
-    fn parse_extension<'b, E>(&self, input: &'b str) -> IResult<&'b str, Extension, E>
-    where
-        E: nom::error::ParseError<&'b str> + ContextError<&'b str>,
-    {
-        context(
-            "extension",
-            map(
-                preceded(
-                    tag::<_, _, E>("-"),
-                    tuple((
-                        take_while_m_n(1, 1, |c: char| c != 'x' && c.is_ascii_alphanumeric()),
-                        many1(preceded(
-                            tag("-"),
-                            verify(
-                                take_while(|c: char| c.is_ascii_alphanumeric()),
-                                |s: &str| s.len() >= 2 && s.len() <= 8,
-                            ),
+    fn parse_extension<'b>(&self, input: &'b str) -> IResult<&'b str, Extension> {
+        map(
+            preceded(
+                tag::<_, &str, _>("-"),
+                tuple((
+                    take_while_m_n(1, 1, |c: char| c != 'x' && c.is_ascii_alphanumeric()),
+                    preceded(
+                        tag("-"),
+                        cut(verify(
+                            take_while(|c: char| c.is_alphanumeric()),
+                            |s: &str| s.len() >= 2 && s.len() <= 8,
                         )),
-                    )),
-                ),
-                |(singleton, parts)| Extension {
-                    singleton: singleton.chars().next().unwrap(),
-                    parts: parts.into_iter().map(|s: &str| s.to_string()).collect(),
-                },
+                    ),
+                    many0(preceded(
+                        tag("-"),
+                        verify(preceded(
+                            cut(peek(not(take_while_m_n(9, 9, |c: char| {
+                                c.is_alphanumeric()
+                            })))),
+                            take_while_m_n(2, 999, |c: char| c.is_ascii_alphanumeric())),
+                            |s: &str| s.len() <= 8
+                       )))
+                    
+                ))
             ),
+            |(singleton, part1, parts)| Extension {
+                singleton: singleton.chars().next().unwrap(),
+                parts: vec![part1]
+                    .into_iter()
+                    .chain(parts.into_iter())
+                    .map(|s: &str| s.to_string())
+                    .collect(),
+            },
         )(input)
     }
 
@@ -291,17 +324,76 @@ impl<'a, T: TerminologyDbLookup> Parser<'a, T> {
         )(input)
     }
 
-    fn parse_language_tag<'b>(&'a self, input: &'b str) -> IResult<&'b str, LanguageTag> {
+    fn parse_language_tag<'b>(
+        &'a self,
+        input: &'b str,
+    ) -> IResult<&'b str, LanguageTag, ParseDetail> {
         map(
             terminated(
                 tuple((
-                    |i| self.parse_language(i),
-                    many_m_n(0, 3, |i| self.parse_extlang(i)),
-                    opt(|i| self.parse_script(i)),
-                    opt(|i| self.parse_region(i)),
-                    many0(|i| self.parse_variant(i)),
-                    many0(|i| self.parse_extension(i)),
-                    opt(|i| self.parse_private_use(i)),
+                    |i| {
+                        self.parse_language(i).map_err(|e| {
+                            e.map(|es| ParseDetail {
+                                key: "language".to_string(),
+                                severity: Severity::Error,
+                                value: ValueX::ValueString(format!("Invalid language code {}", es)),
+                            })
+                        })
+                    },
+                    many_m_n(0, 3, |i| {
+                        self.parse_extlang(i).map_err(|e| {
+                            e.map(|es| ParseDetail {
+                                key: "extLang".to_string(),
+                                severity: Severity::Error,
+                                value: ValueX::ValueString(format!("Invalid extLang code {}", es)),
+                            })
+                        })
+                    }),
+                    opt(|i| {
+                        self.parse_script(i).map_err(|e| {
+                            e.map(|es| ParseDetail {
+                                key: "script".to_string(),
+                                severity: Severity::Error,
+                                value: ValueX::ValueString(format!("Invalid script code {}", es)),
+                            })
+                        })
+                    }),
+                    opt(|i| {
+                        self.parse_region(i).map_err(|e| {
+                            e.map(|es| ParseDetail {
+                                key: "region".to_string(),
+                                severity: Severity::Error,
+                                value: ValueX::ValueString(format!("Invalid region code {}", es)),
+                            })
+                        })
+                    }),
+                    many0(|i| {
+                        self.parse_variant(i).map_err(|e| {
+                            e.map(|es| ParseDetail {
+                                key: "variant".to_string(),
+                                severity: Severity::Error,
+                                value: ValueX::ValueString(format!("Invalid variant code {}", es)),
+                            })
+                        })
+                    }),
+                    many0(|i| {
+                        self.parse_extension(i).map_err(|e| {
+                            e.map(|es| ParseDetail {
+                                key: "extension".to_string(),
+                                severity: Severity::Error,
+                                value: ValueX::ValueString(format!("Invalid extension: {}", es)),
+                            })
+                        })
+                    }),
+                    opt(|i| {
+                        self.parse_private_use(i).map_err(|e| {
+                            e.map(|es| ParseDetail {
+                                key: "privateUse".to_string(),
+                                severity: Severity::Error,
+                                value: ValueX::ValueString(format!("Invalid private use: {}", es)),
+                            })
+                        })
+                    }),
                 )),
                 eof,
             ),
@@ -369,11 +461,11 @@ impl<'a, T: TerminologyDbLookup> Parser<'a, T> {
                 }
             }
             Err(v) => ParseResult {
-                details: vec![ParseDetail {
-                    severity: Severity::Error,
-                    key: "language".to_string(),
-                    value: ValueX::ValueString(format!("Invalid language tag: {}. {}.", code, v.to_string())),
-                }],
+                details: match v {
+                    Err::Failure(e) => vec![e],
+                    Err::Error(e) => vec![e],
+                    Err::Incomplete(_) => vec![],
+                },
                 concept: None,
             },
         }
@@ -407,7 +499,7 @@ mod tests {
         assert_eq!(result.details.len(), expected.details.len());
         for (actual_detail, expected_detail) in result.details.iter().zip(expected.details.iter()) {
             assert_eq!(actual_detail.severity, expected_detail.severity);
-            // assert_eq!(actual_detail.key, expected_detail.key);
+            assert_eq!(actual_detail.key, expected_detail.key);
             // assert_eq!(actual_detail.value, expected_detail.value);
         }
     }
@@ -627,7 +719,7 @@ mod tests {
         db.insert(create_concept("US", "region", Some("United States")));
         let parser = Parser::new(&db);
 
-        let code = "en-US-u".to_string();
+        let code = "en-US-u-be-abcdefghi".to_string();
         let result = parser.parse(code.clone(), None);
         let expected = ParseResult {
             details: vec![ParseDetail {
