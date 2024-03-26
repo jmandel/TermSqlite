@@ -1,5 +1,6 @@
 mod extism;
 use extism::*;
+use regex::Regex;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct LanguageTag {
@@ -11,6 +12,13 @@ pub struct LanguageTag {
     pub extensions: Vec<Extension>,
     pub private_use: Vec<String>,
 }
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Extension {
+    pub singleton: char,
+    pub parts: Vec<String>,
+}
+
 
 type CodeWithDoc<'a> = (String, &'a str, Option<Severity>);
 impl LanguageTag {
@@ -37,24 +45,25 @@ impl LanguageTag {
                     .iter()
                     .map(|c| (c.clone(), "variant", Some(Severity::Warning))),
             )
-            .chain(
-                self.extensions
-                    .iter()
-                    .map(|e| {
-                        (format!("{}-{}", e.singleton, e.parts.join("-")), "extension", None)
-                    })
-            )
+            .chain(self.extensions.iter().map(|e| {
+                (
+                    format!("{}-{}", e.singleton, e.parts.join("-")),
+                    "extension",
+                    None,
+                )
+            }))
             .chain(
                 self.private_use
                     .iter()
-                    .map(|c| (c.clone(), "privateUse", None)))
+                    .map(|c| (c.clone(), "privateUse", None)),
+            )
             .collect()
     }
 
     fn validate_codes(&self, db: &dyn TerminologyDb) -> Vec<ParseDetail> {
         self.properties()
             .into_iter()
-            .filter(|(c, cdoc, csev)| csev.is_some())
+            .filter(|(_c, _cdoc, csev)| csev.is_some())
             .filter_map(|(c, t, sev)| {
                 match db
                     .lookup(LookupRequest {
@@ -91,13 +100,32 @@ impl LanguageTag {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub struct Extension {
-    pub singleton: char,
-    pub parts: Vec<String>,
+impl<T> TerminologyEngine<T> for Guest<T>
+where
+    T: TerminologyDb,
+{
+    fn parse(&self, request: ParseRequest) -> ParseResponse {
+        self.parse_language_tag(&request.code)
+            .map(|tag| {
+                // lookup lang, script, etc to be sure they are all valid, accumulating errors
+                let mut concept = Some(tag.into_concept(&request.code, &self.db));
+                let mut details = tag.validate_codes(&self.db);
+
+                ParseResponse {
+                    concept: Some(tag.into_concept(&request.code, &self.db)),
+                    details,
+                }
+            })
+            .unwrap_or_else(|detail| ParseResponse {
+                concept: None,
+                details: vec![detail],
+            })
+    }
+
+    fn subsumes(&self, req: SubsumesRequest) -> SubsumesResponse {
+        todo!()
+    }
 }
-use nom::combinator::value;
-use regex::Regex;
 
 impl<T> Guest<T>
 where
@@ -248,33 +276,6 @@ where
             extensions,
             private_use,
         })
-    }
-}
-
-impl<T> TerminologyEngine<T> for Guest<T>
-where
-    T: TerminologyDb,
-{
-    fn parse(&self, request: ParseRequest) -> ParseResponse {
-        self.parse_language_tag(&request.code)
-            .map(|tag| {
-                // lookup lang, script, etc to be sure they are all valid, accumulating errors
-                let mut concept = Some(tag.into_concept(&request.code, &self.db));
-                let mut details = tag.validate_codes(&self.db);
-
-                ParseResponse {
-                    concept: Some(tag.into_concept(&request.code, &self.db)),
-                    details,
-                }
-            })
-            .unwrap_or_else(|detail| ParseResponse {
-                concept: None,
-                details: vec![detail],
-            })
-    }
-
-    fn subsumes(&self, req: SubsumesRequest) -> SubsumesResponse {
-        todo!()
     }
 }
 
