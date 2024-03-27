@@ -1,4 +1,5 @@
 mod extism;
+pub mod codesystem;
 use extism::*;
 use regex::Regex;
 
@@ -18,7 +19,6 @@ pub struct Extension {
     pub singleton: char,
     pub parts: Vec<String>,
 }
-
 
 type CodeWithDoc<'a> = (String, &'a str, Option<Severity>);
 impl LanguageTag {
@@ -63,10 +63,10 @@ impl LanguageTag {
     fn validate_codes(&self, db: &dyn TerminologyDb) -> Vec<ParseDetail> {
         self.properties()
             .into_iter()
-            .filter(|(_c, _cdoc, csev)| csev.is_some())
+            .filter(|(_c, _t, sev)| sev.is_some())
             .filter_map(|(c, t, sev)| {
                 match db
-                    .lookup(LookupRequest {
+                    .db_lookup(LookupRequest {
                         code: c.to_string(),
                         properties: None,
                     })
@@ -89,6 +89,7 @@ impl LanguageTag {
             .iter()
             .map(|(c, t, _sev)| Property {
                 code: t.to_string(),
+                // value: ValueX::ValueString(db.lookup_display(&c, None)),
                 value: ValueX::ValueString(c.to_string()),
             })
             .collect();
@@ -96,7 +97,36 @@ impl LanguageTag {
         Concept {
             code: code.to_string(),
             properties,
+            ..Default::default()
         }
+    }
+}
+
+impl From<&str> for LookupRequest {
+    fn from(code: &str) -> Self {
+        LookupRequest {
+            code: code.to_string(),
+            properties: None,
+        }
+    }
+}
+
+impl dyn TerminologyDb + '_ {
+    #[allow(dead_code)]
+    fn lookup_display(&self, code: &str) -> String {
+        self.db_lookup(code.into())
+            .concept
+            .and_then(|c| {
+                c.properties
+                    .iter()
+                    .filter(|p| p.code == "display")
+                    .filter_map(|p| match &p.value {
+                        ValueX::ValueString(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .next()
+            })
+            .unwrap_or(code.to_string())
     }
 }
 
@@ -106,15 +136,9 @@ where
 {
     fn parse(&self, request: ParseRequest) -> ParseResponse {
         self.parse_language_tag(&request.code)
-            .map(|tag| {
-                // lookup lang, script, etc to be sure they are all valid, accumulating errors
-                let mut concept = Some(tag.into_concept(&request.code, &self.db));
-                let mut details = tag.validate_codes(&self.db);
-
-                ParseResponse {
-                    concept: Some(tag.into_concept(&request.code, &self.db)),
-                    details,
-                }
+            .map(|tag| ParseResponse {
+                concept: Some(tag.into_concept(&request.code, &self.db)),
+                details: tag.validate_codes(&self.db),
             })
             .unwrap_or_else(|detail| ParseResponse {
                 concept: None,
@@ -122,8 +146,12 @@ where
             })
     }
 
-    fn subsumes(&self, req: SubsumesRequest) -> SubsumesResponse {
+    fn subsumes(&self, _req: SubsumesRequest) -> SubsumesResponse {
         todo!()
+    }
+    
+    fn metadata(&self) -> String {
+        codesystem::CODE_SYSTEM.to_string()
     }
 }
 
@@ -135,7 +163,7 @@ where
         let re = Regex::new(r"-").unwrap();
         let parts: Vec<&str> = re.split(input).collect();
 
-        let mut language = String::new();
+        let language: String;
         let mut extlang = Vec::new();
         let mut script = None;
         let mut region = None;
@@ -296,6 +324,7 @@ mod tests {
         Concept {
             code: code.to_string(),
             properties,
+            ..Default::default()
         }
     }
     fn assert_parse_result(result: ParseResponse, expected: ParseResponse) {
@@ -326,6 +355,7 @@ mod tests {
             concept: Some(Concept {
                 code: code.to_string(),
                 properties,
+                ..Default::default()
             }),
         }
     }
@@ -559,52 +589,35 @@ mod tests {
         });
         assert!(result.concept.is_none());
     }
-}
+    mod mock_terminology_db {
 
-mod mock_terminology_db {
+        use super::*;
+        pub struct MockTerminologyDb {
+            concepts: Vec<Concept>,
+        }
 
-    use super::*;
-    pub struct MockTerminologyDb {
-        concepts: Vec<Concept>,
-    }
+        impl MockTerminologyDb {
+            pub fn new() -> Self {
+                MockTerminologyDb {
+                    concepts: Vec::new(),
+                }
+            }
 
-    impl MockTerminologyDb {
-        pub fn new() -> Self {
-            MockTerminologyDb {
-                concepts: Vec::new(),
+            pub fn insert(&mut self, concept: Concept) {
+                self.concepts.push(concept);
             }
         }
 
-        pub fn insert(&mut self, concept: Concept) {
-            self.concepts.push(concept);
-        }
-    }
+        impl TerminologyDb for MockTerminologyDb {
+            fn db_lookup(&self, req: LookupRequest) -> LookupResponse {
+                LookupResponse {
+                    concept: self.concepts.iter().find(|c| c.code == req.code).cloned(),
+                }
+            }
 
-    impl TerminologyDb for MockTerminologyDb {
-        fn lookup(&self, req: LookupRequest) -> LookupResponse {
-            LookupResponse {
-                concept: self.concepts.iter().find(|c| c.code == req.code).cloned(),
+            fn db_subsumes(&self, _req: SubsumesRequest) -> SubsumesResponse {
+                todo!()
             }
         }
-
-        fn subsumes(&self, req: SubsumesRequest) -> SubsumesResponse {
-            todo!()
-        }
-
-        // fn lookup_display(&self, code: &str, properties: Option<&[String]>) -> String {
-        // code.to_string()
-        // self.lookup(code, None)
-        //     .and_then(|c| {
-        //         c.properties
-        //             .iter()
-        //             .filter(|p| p.code == "display")
-        //             .filter_map(|p| match &p.value {
-        //                 ValueX::ValueString(s) => Some(s.clone()),
-        //                 _ => None,
-        //             })
-        //             .next()
-        //     })
-        //     .unwrap_or(code.to_string())
-        // }
     }
 }

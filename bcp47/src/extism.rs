@@ -1,9 +1,12 @@
-use extism_pdk::{plugin_fn, FnResult};
+use extism_pdk::{host_fn, info, log, plugin_fn, FnResult, LogLevel};
 use extism_pdk::{FromBytes, Json, ToBytes};
 use nom::error::ParseError;
 use serde_derive::{Deserialize, Serialize};
 
-pub struct Guest<T> where T: TerminologyDb{
+pub struct Guest<T>
+where
+    T: TerminologyDb,
+{
     pub(crate) db: T,
 }
 
@@ -47,13 +50,14 @@ impl ParseError<&str> for ParseDetail {
 }
 
 pub trait TerminologyEngine<T: TerminologyDb> {
+    fn metadata(&self) -> String;
     fn parse(&self, req: ParseRequest) -> ParseResponse;
     fn subsumes(&self, req: SubsumesRequest) -> SubsumesResponse;
 }
 
-pub trait TerminologyDb: Sync {
-    fn lookup(&self, req: LookupRequest) -> LookupResponse;
-    fn subsumes(&self, req: SubsumesRequest) -> SubsumesResponse;
+pub trait TerminologyDb {
+    fn db_lookup(&self, req: LookupRequest) -> LookupResponse;
+    fn db_subsumes(&self, req: SubsumesRequest) -> SubsumesResponse;
 }
 
 pub trait WithDb {
@@ -68,12 +72,27 @@ impl HostReal {
         HostReal {}
     }
 }
+
+#[host_fn]
+extern "ExtismHost" {
+    fn db_lookup(input: LookupRequest) -> LookupResponse;
+}
+
+#[host_fn]
+extern "ExtismHost" {
+    fn db_subsumes(input: LookupRequest) -> LookupResponse;
+}
 impl TerminologyDb for HostReal {
-    fn lookup(&self, req: LookupRequest) -> LookupResponse {
-        todo!()
+    fn db_lookup(&self, req: LookupRequest) -> LookupResponse {
+        log!(LogLevel::Info, "Calling host");
+        unsafe {
+            let res = db_lookup(req);
+            info!("Got back : {:?}", res);
+            res.unwrap_or(LookupResponse { concept: None })
+        }
     }
 
-    fn subsumes(&self, req: SubsumesRequest) -> SubsumesResponse {
+    fn db_subsumes(&self, _req: SubsumesRequest) -> SubsumesResponse {
         todo!()
     }
 }
@@ -113,13 +132,15 @@ pub struct Property {
     pub value: ValueX,
 }
 #[derive(
-    Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, ToBytes, FromBytes,
+    Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, ToBytes, FromBytes,
 )]
 #[encoding(Json)]
 pub struct Concept {
     pub code: String,
+    pub display: Option<String>,
     pub properties: Vec<Property>,
 }
+
 
 #[derive(
     Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, ToBytes, FromBytes,
@@ -210,6 +231,11 @@ macro_rules! define_terminology_engine {
         }
 
         #[plugin_fn]
+        pub fn metadata() -> FnResult<String> {
+            Ok(TERMINOLOGY_ENGINE.metadata())
+        }
+
+        #[plugin_fn]
         pub fn parse(req: ParseRequest) -> FnResult<ParseResponse> {
             Ok(TERMINOLOGY_ENGINE.parse(req))
         }
@@ -263,6 +289,7 @@ mod tests {
                     },
                     // Add more Property structs here as needed
                 ],
+                ..Concept::default()
             }),
         };
 

@@ -7,6 +7,40 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Unicode;
 
+using Extism.Sdk;
+
+var manifest = new Manifest(new PathWasmSource("./bcp47.wasm"));
+Plugin.ConfigureCustomLogging(LogLevel.Info);
+
+using (var plugin = new Plugin(manifest, new HostFunction[] {
+    HostFunction.FromMethod("db_lookup", IntPtr.Zero, (CurrentPlugin plugin, long reqOffset) =>
+    {
+        var key = plugin.ReadString(reqOffset);
+        Console.WriteLine($"Looking up key={key}");
+        var reqObject = System.Text.Json.JsonSerializer.Deserialize<LookupRequest>(key);
+        Console.WriteLine($"Parsed key={System.Text.Json.JsonSerializer.Serialize(reqObject)}");
+        if (reqObject?.Code == "en") {
+            var resJson = System.Text.Json.JsonSerializer.Serialize(new LookupResponse { Concept = new Concept { Code = reqObject.Code, Properties = new List<Property> { new Property { Code = "en", Value = new ValueString {Value = "English"}} } } });
+            return plugin.WriteString(resJson);
+        } else  if (reqObject?.Code == "US") {
+            var resJson = System.Text.Json.JsonSerializer.Serialize(new LookupResponse { Concept = new Concept { Code = reqObject.Code, Properties = new List<Property> { new Property { Code = "en", Value = new ValueString {Value = "USA"}} } } });
+            return plugin.WriteString(resJson);
+        } else {
+            return plugin.WriteString(@"{""concept"": null}");
+        }
+    }),
+ }, withWasi: true))
+{
+
+    var output = plugin.Call("parse", @"{""code"":""en-US-u-bad-one-seventeen-x-okpriv""}");
+    Console.WriteLine(output);
+    output = plugin.Call("parse", @"{""code"":""en-US-u-bad-one-sevenn-x-okpriv""}");
+    Console.WriteLine(output);
+    output = plugin.Call("parse", @"{""code"":""en-US-x-okpriv""}");
+    Console.WriteLine(output);
+}
+Plugin.DrainCustomLogs(line => Console.WriteLine(line));
+
 var rootCommand = new RootCommand("TermSqlite");
 var dbFolder = new Option<string>(
     "--dbs",
@@ -36,7 +70,7 @@ rootCommand.SetHandler((dbFolder, ndjsonFolder) =>
 {
     string connectionString = "Data Source=file::memory:?immutable=true;Pooling=False";
     var sqliteManager = new SqliteManager(dbFolder, connectionString);
-    var dbWatcherReady = new StartupWatcher(dbFolder, "*.db", TimeSpan.FromSeconds(.5), sqliteManager.HandleFileChange);
+    var dbWatcherReady = new StartupWatcher(dbFolder, "*", TimeSpan.FromSeconds(.5), sqliteManager.HandleFileChange);
     var ndjsonWatcher = (ndjsonFolder != null) ? new NdjsonGzWatcher(ndjsonFolder, dbFolder) : null;
 
     var builder = WebApplication.CreateBuilder(args);
@@ -98,6 +132,8 @@ rootCommand.SetHandler((dbFolder, ndjsonFolder) =>
         {
             string input = ReadLine.Read("> ");
             ReadLine.AddHistory(input);
+            var r = sqliteManager.QueryConcept(input != "" ? input : "LP14082-9", "http://loinc.org"); 
+            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(r, serializeOptions));
 
             if (string.IsNullOrWhiteSpace(input))
                 break;

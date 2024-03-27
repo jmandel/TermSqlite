@@ -39,35 +39,35 @@ public class ReadyFileWatcher
         _watcher.Deleted += OnFileChanged;
     }
 
-    private async void OnFileChanged(object _, FileSystemEventArgs e)
+    private async void OnFileChanged(object _, FileSystemEventArgs fileEvent)
     {
         Console.WriteLine($"On file changed {this}");
         await _semaphore.WaitAsync();
         try
         {
-            if (_pendingHandlerTasks.TryGetValue(e.FullPath, out var pendingCancellationTokenSource))
+            if (_pendingHandlerTasks.TryGetValue(fileEvent.FullPath, out var pendingCancellationTokenSource))
             {
                 pendingCancellationTokenSource.Cancel();
             }
 
             var handlerCancellationTokenSource = new CancellationTokenSource();
-            _pendingHandlerTasks[e.FullPath] = handlerCancellationTokenSource;
+            _pendingHandlerTasks[fileEvent.FullPath] = handlerCancellationTokenSource;
 
             _ = Task.Run(async () =>
             {
                 await Task.Delay(_debounceDelay, handlerCancellationTokenSource.Token);
                 try
                 {
-                    await _handler(e.FullPath, e.ChangeType, handlerCancellationTokenSource.Token);
+                    await _handler(fileEvent.FullPath, fileEvent.ChangeType, handlerCancellationTokenSource.Token);
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine("Exception in file change handler: " + e.Message);
+                    Console.WriteLine("Exception in file change handler: " + e.Message + fileEvent.FullPath);
                 }
                 await _semaphore.WaitAsync();
-                if (_pendingHandlerTasks.TryGetValue(e.FullPath, out var existingCancellationTokenSource) && existingCancellationTokenSource == handlerCancellationTokenSource)
+                if (_pendingHandlerTasks.TryGetValue(fileEvent.FullPath, out var existingCancellationTokenSource) && existingCancellationTokenSource == handlerCancellationTokenSource)
                 {
-                    _pendingHandlerTasks.Remove(e.FullPath);
+                    _pendingHandlerTasks.Remove(fileEvent.FullPath);
                 }
                 _semaphore.Release();
 
@@ -91,7 +91,7 @@ class StartupWatcher : ReadyFileWatcher
         var existingFiles = Directory.GetFiles(_folderPath, _filter);
         foreach (var f in existingFiles)
         {
-            Console.WriteLine($"Load existing {f}");
+            Console.WriteLine($"Load existing from {_folderPath} {_filter} {f}");
             _handler(f, WatcherChangeTypes.Created, default);
         }
     }

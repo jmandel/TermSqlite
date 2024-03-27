@@ -8,6 +8,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="bcp47/**" />
+    <PackageReference Include="Extism.runtime.all" Version="1.2.0" />
+    <PackageReference Include="Extism.Sdk" Version="1.2.0" />
     <PackageReference Include="FluentAssertions" Version="6.12.0" />
     <PackageReference Include="Microsoft.AspNetCore.App" Version="2.2.8" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.2" />
@@ -20,7 +23,6 @@
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
     <EmbeddedResource Include="sqlite/*.sqlite" />
     <EmbeddedResource Include="fixtures/*.ndjson.gz" />
-
   </ItemGroup>
 
 </Project>

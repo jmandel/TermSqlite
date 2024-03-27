@@ -8,10 +8,15 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Text.RegularExpressions;
+using Extism.Sdk;
+using Microsoft.AspNetCore.Mvc;
+using System.Data;
 
 
 public record CodeSystem(string CanonicalUrl, string? CanonicalVersion, string? ResourceJson);
 public record Db(string FileName, string Name, List<CodeSystem> CodeSystems);
+public record Wasm(string FileName, CodeSystem CodeSystem, Plugin Plugin);
+
 
 
 public class SqliteManager
@@ -19,12 +24,15 @@ public class SqliteManager
     private readonly string _folderPath;
     private readonly string _connectionString;
     public ConcurrentDictionary<string, Db> Dbs { get; private set; }
+    public ConcurrentDictionary<string, Wasm> Wasms { get; private set; }
+
 
     public SqliteManager(string folderPath, string connectionString)
     {
         _folderPath = folderPath;
         _connectionString = connectionString;
         Dbs = new ConcurrentDictionary<string, Db>();
+        Wasms = new ConcurrentDictionary<string, Wasm>();
     }
 
     public async Task HandleFileChange(string filePath, WatcherChangeTypes changeType, CancellationToken cancellationToken = default)
@@ -33,15 +41,14 @@ public class SqliteManager
         Console.WriteLine(filePath);
         Console.WriteLine(changeType);
         string dbName = Path.GetFileNameWithoutExtension(filePath);
-        if ((changeType & WatcherChangeTypes.Deleted) != 0)
-        {
-            Db? removed = null;
-            Dbs.TryRemove(dbName, out removed);
-            return;
-        }
 
         if (Path.GetExtension(filePath).Equals(".db", StringComparison.OrdinalIgnoreCase))
         {
+            if ((changeType & WatcherChangeTypes.Deleted) != 0)
+            {
+                Dbs.TryRemove(dbName, out var removed);
+                return;
+            }
             try
             {
 
@@ -59,6 +66,60 @@ public class SqliteManager
             }
 
         }
+        else if (Path.GetExtension(filePath).Equals(".wasm", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                string wasmName = Path.GetFileNameWithoutExtension(filePath);
+                var manifest = new Manifest(new PathWasmSource(filePath));
+                String? canonicalUrl = null;
+                String? canonicalVersion = null;
+                var plugin = new Plugin(manifest, new HostFunction[] {
+                    HostFunction.FromMethod("db_lookup", IntPtr.Zero, (CurrentPlugin plugin, long reqOffset) =>
+                    {
+                        var key = plugin.ReadString(reqOffset);
+                        Console.WriteLine($"Looking up key={key} on {canonicalUrl} {canonicalVersion}");
+                        var reqObject = System.Text.Json.JsonSerializer.Deserialize<LookupRequest>(key);
+                        Console.WriteLine($"Parsed key={System.Text.Json.JsonSerializer.Serialize(reqObject)}");
+                        if (reqObject?.Code == "en") {
+                            var resJson = System.Text.Json.JsonSerializer.Serialize(new LookupResponse { Concept = new Concept { Code = reqObject.Code, Properties = new List<Property> { new Property { Code = "en", Value = new ValueString {Value = "English"}} } } });
+                            return plugin.WriteString(resJson);
+                        } else  if (reqObject?.Code == "US") {
+                            var resJson = System.Text.Json.JsonSerializer.Serialize(new LookupResponse { Concept = new Concept { Code = reqObject.Code, Properties = new List<Property> { new Property { Code = "en", Value = new ValueString {Value = "USA"}} } } });
+                            return plugin.WriteString(resJson);
+                        } else {
+                            return plugin.WriteString(@"{""concept"": null}");
+                        }
+                    }),
+                }, withWasi: true);
+                var metadataJson = plugin.Call("metadata", "");
+                var codeSystemJson = System.Text.Json.JsonDocument.Parse(metadataJson);
+                canonicalUrl = codeSystemJson.RootElement.GetProperty("url").GetString();
+                canonicalVersion = codeSystemJson.RootElement.TryGetProperty("version", out var versionElement) ? versionElement.GetString() : null;
+                var codeSystemRecord = new CodeSystem(canonicalUrl!, canonicalVersion, metadataJson);
+
+                var wasmRecord = new Wasm(wasmName, codeSystemRecord, plugin);
+                Wasms.AddOrUpdate(wasmName, wasmRecord, (_, __) => wasmRecord);
+                Console.WriteLine("Loaded wasm");
+
+                // print all entries in Wasms
+                foreach (var entry in Wasms)
+                {
+                    Console.WriteLine(entry.Key);
+                    Console.WriteLine(entry.Value.FileName);
+                    Console.WriteLine(entry.Value.CodeSystem);
+                }
+
+                var output = plugin.Call("parse", @"{""code"":""en-US""}");
+                Console.WriteLine(output);
+
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
+        }
+
         return;
     }
 
@@ -97,19 +158,118 @@ public class SqliteManager
 
     public Db? GetDbByCanonicalSystem(string canonicalUrl, string? canonicalVersion = null)
     {
-        try {
+        try
+        {
             return Dbs.Values.First(db =>
                 db.CodeSystems.Any(cs =>
                     cs.CanonicalUrl == canonicalUrl &&
                     (canonicalVersion == null || cs.CanonicalVersion == canonicalVersion)
                 )
             );
-        } catch  {
+        }
+        catch
+        {
             return null;
         }
     }
 
-    public async IAsyncEnumerable<Dictionary<string, object>> QueryAsync(string query, IReadOnlyDictionary<string,object> queryParams, List<string> dbNamesToAttach, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+
+    public Wasm? GedPluginByCanonicalSystem(string canonicalUrl, string? canonicalVersion = null)
+    {
+        try
+        {
+            return Wasms.Values.First(db =>
+                    db.CodeSystem.CanonicalUrl == canonicalUrl &&
+                    (canonicalVersion == null || db.CodeSystem.CanonicalVersion == canonicalVersion)
+                );
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public Concept? QueryConcept(string code, string canonicalUrl, string? canonicalVersion = null)
+    {
+        var db = GetDbByCanonicalSystem(canonicalUrl, canonicalVersion);
+        if (db == null)
+        {
+            return null;
+        }
+
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        AttachDatabase(connection, db);
+
+        var query = @$"
+        SELECT c.code, c.display, p.property_code, pt.type, p.target_value
+        FROM {db.Name}.Concepts c
+        LEFT JOIN {db.Name}.ConceptProperty p ON c.id = p.concept_id
+        LEFT JOIN {db.Name}.PropertyTypes pt ON pt.code = p.property_code
+        WHERE c.code = @code";
+
+        using var command = new SqliteCommand(query, connection);
+        command.Parameters.AddWithValue("@code", code);
+
+        using var reader = command.ExecuteReader();
+        if (!reader.HasRows)
+        {
+            return null;
+        }
+
+        var concept = new Concept { Code = code };
+        while (reader.Read())
+        {
+            concept.Display ??= reader.GetString("display");
+            AddProperty(concept, reader);
+        }
+
+        return concept;
+    }
+
+    private void AttachDatabase(SqliteConnection connection, Db db)
+    {
+        var attachCommand = $"ATTACH 'file:{Path.Combine(_folderPath, $"{db.FileName}.db")}?immutable=true' AS '{db.Name}';";
+        using var command = new SqliteCommand(attachCommand, connection);
+        command.ExecuteNonQuery();
+    }
+
+    private void AddProperty(Concept concept, SqliteDataReader reader)
+    {
+        if (reader.IsDBNull("property_code"))
+        {
+            return;
+        }
+
+        var property = new Property
+        {
+            Code = reader.GetString("property_code"),
+            Value = CreateValue(reader)
+        };
+
+        concept.Properties.Add(property);
+    }
+
+    private ValueX CreateValue(SqliteDataReader reader)
+    {
+        return reader.GetString("type") switch
+        {
+            "code" => new ValueCode { Value = reader.GetString("target_value") },
+            "coding" => new ValueCoding
+            {
+                Value = new Coding
+                {
+                    System = reader.GetString("target_value"),
+                    Code = reader.GetString("target_value"),
+                    Display = reader.GetString("value_coding_display")
+                }
+            },
+            "string" => new ValueString { Value = reader.GetString("target_value") },
+            "decimal" => new ValueDecimal { Value = reader.GetString("target_value") },
+            _ => throw new Exception("Unknown property type")
+        };
+    }
+    public async IAsyncEnumerable<Dictionary<string, object>> QueryAsync(string query, IReadOnlyDictionary<string, object> queryParams, List<string> dbNamesToAttach, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var MAX_CYCLES = 1_500_000_000;
         var CHECK_CYCLES = 1_000_000_000;
@@ -154,7 +314,8 @@ public class SqliteManager
                 }
 
                 using var queryCommand = new SqliteCommand(query, connection);
-                foreach (var param in queryParams) {
+                foreach (var param in queryParams)
+                {
                     queryCommand.Parameters.AddWithValue(param.Key, param.Value);
                 }
 
@@ -177,9 +338,12 @@ public class SqliteManager
             catch (Exception ex)
             {
                 Console.WriteLine(ex.Message);
-                if (budgetExceed) {
+                if (budgetExceed)
+                {
                     throw new Exception("Canceled for exceeding computation budget");
-                } else {
+                }
+                else
+                {
                     throw ex;
                 }
             }
