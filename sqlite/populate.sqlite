@@ -49,7 +49,9 @@ SELECT
   pt.id AS property_type_id,
   CASE
     WHEN json_extract(property.value, '$.valueCode') IS NOT NULL THEN json_extract(property.value, '$.valueCode')
-    ELSE json_extract(property.value, '$.valueString')
+    WHEN json_extract(property.value, '$.valueDateTime') IS NOT NULL THEN json_extract(property.value, '$.valueDateTime')
+    WHEN json_extract(property.value, '$.valueString') IS NOT NULL THEN json_extract(property.value, '$.valueString')
+    ELSE json_extract(property.value, 'FAILED TO PARSE $')
   END AS value
 FROM RawData rd
 JOIN Concepts c ON c.code = json_extract(rd.json, '$.code') AND c.code_system_id = (SELECT value FROM Variables WHERE name = 'code_system_id')

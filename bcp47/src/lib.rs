@@ -1,5 +1,5 @@
-mod extism;
 pub mod codesystem;
+mod extism;
 use extism::*;
 use regex::Regex;
 
@@ -28,7 +28,7 @@ impl LanguageTag {
             .chain(
                 self.extlang
                     .iter()
-                    .map(|c| (c.clone(), "extLang", Some(Severity::Warning))),
+                    .map(|c| (c.clone(), "extlang", Some(Severity::Warning))),
             )
             .chain(
                 self.script
@@ -55,50 +55,94 @@ impl LanguageTag {
             .chain(
                 self.private_use
                     .iter()
-                    .map(|c| (c.clone(), "privateUse", None)),
+                    .map(|c| (c.clone(), "privateuse", None)),
             )
             .collect()
     }
 
-    fn validate_codes(&self, db: &dyn TerminologyDb) -> Vec<ParseDetail> {
-        self.properties()
-            .into_iter()
-            .filter(|(_c, _t, sev)| sev.is_some())
-            .filter_map(|(c, t, sev)| {
-                match db
-                    .db_lookup(LookupRequest {
-                        code: c.to_string(),
-                        properties: None,
-                    })
-                    .concept
-                {
-                    None => Some(ParseDetail {
-                        key: t.to_string(),
-                        severity: sev.unwrap(),
-                        value: ValueX::ValueString(format!("Invalid {} subtag: {}", t, c)),
-                    }),
-                    _ => None,
+    fn into_concept(
+        &self,
+        code: &str,
+        db: &dyn TerminologyDb,
+    ) -> (Option<Concept>, Vec<ParseDetail>) {
+        let mut language_display = None;
+        let mut region_display = None;
+        let mut script_display = None;
+        let mut properties = Vec::new();
+        let mut parse_details = Vec::new();
+
+        for (c, t, sev) in self.properties() {
+            if let Some(severity) = sev {
+                let lookup_code = format!("{}-{}", t, c);
+                let lookup_result = db.db_lookup(LookupRequest {
+                    code: lookup_code.clone(),
+                    properties: None,
+                });
+
+                match lookup_result.concept {
+                    Some(concept) => {
+                        let display = concept.display.unwrap_or_else(|| c.clone());
+                        properties.push(Property {
+                            code: t.to_string(),
+                            value: ValueX::ValueString(display.clone()),
+                        });
+
+                        match t {
+                            "language" => language_display = Some(display),
+                            "region" => region_display = Some(display),
+                            "script" => script_display = Some(display),
+                            _ => {}
+                        }
+                    }
+                    None => {
+                        properties.push(Property {
+                            code: t.to_string(),
+                            value: ValueX::ValueString(c.clone()),
+                        });
+
+                        parse_details.push(ParseDetail {
+                            key: t.to_string(),
+                            severity,
+                            value: ValueX::ValueString(format!("Invalid {} subtag: {}", t, c)),
+                        });
+                    }
                 }
-            })
-            .collect()
-    }
-
-    fn into_concept(&self, code: &str, _db: &dyn TerminologyDb) -> Concept {
-        let properties = self
-            .properties()
-            .iter()
-            .map(|(c, t, _sev)| Property {
-                code: t.to_string(),
-                // value: ValueX::ValueString(db.lookup_display(&c, None)),
-                value: ValueX::ValueString(c.to_string()),
-            })
-            .collect();
-
-        Concept {
-            code: code.to_string(),
-            properties,
-            ..Default::default()
+            }
         }
+
+        let parts = [
+            region_display.map(|region| format!("Region: {}", region)),
+            script_display.map(|script| format!("Script: {}", script)),
+            match self.variants.len() {
+                0 => None,
+                _ => Some(format!("Variant: {}", self.variants.join(", "))),
+            },
+        ]
+        .iter()
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+
+        let display = match language_display {
+            Some(language) => {
+                if !parts.is_empty() {
+                    format!("Language: {} ({})", language, parts)
+                } else {
+                    format!("Language: {}", language)
+                }
+            }
+            None => format!("Language tag: {}", code),
+        };
+        (
+            Some(Concept {
+                code: code.to_string(),
+                properties,
+                display: Some(display),
+                ..Default::default()
+            }),
+            parse_details,
+        )
     }
 }
 
@@ -136,9 +180,9 @@ where
 {
     fn parse(&self, request: ParseRequest) -> ParseResponse {
         self.parse_language_tag(&request.code)
-            .map(|tag| ParseResponse {
-                concept: Some(tag.into_concept(&request.code, &self.db)),
-                details: tag.validate_codes(&self.db),
+            .map(|tag| {
+                let (concept, details) = tag.into_concept(&request.code, &self.db);
+                ParseResponse { concept, details }
             })
             .unwrap_or_else(|detail| ParseResponse {
                 concept: None,
@@ -149,7 +193,7 @@ where
     fn subsumes(&self, _req: SubsumesRequest) -> SubsumesResponse {
         todo!()
     }
-    
+
     fn metadata(&self) -> String {
         codesystem::CODE_SYSTEM.to_string()
     }

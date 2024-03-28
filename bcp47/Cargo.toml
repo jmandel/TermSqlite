@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [profile.release]
-opt-level = 'z'
+opt-level = "z"
 lto = true
+debug = 0
+panic = 'abort' # Makes panics take less space
 
 [lib]
 crate-type=["cdylib"]

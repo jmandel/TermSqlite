@@ -80,16 +80,11 @@ public class SqliteManager
                         var key = plugin.ReadString(reqOffset);
                         Console.WriteLine($"Looking up key={key} on {canonicalUrl} {canonicalVersion}");
                         var reqObject = System.Text.Json.JsonSerializer.Deserialize<LookupRequest>(key);
+                        var concept = QueryConcept(reqObject!.Code!, canonicalUrl!, canonicalVersion);
                         Console.WriteLine($"Parsed key={System.Text.Json.JsonSerializer.Serialize(reqObject)}");
-                        if (reqObject?.Code == "en") {
-                            var resJson = System.Text.Json.JsonSerializer.Serialize(new LookupResponse { Concept = new Concept { Code = reqObject.Code, Properties = new List<Property> { new Property { Code = "en", Value = new ValueString {Value = "English"}} } } });
+                            var resJson = System.Text.Json.JsonSerializer.Serialize(new LookupResponse { Concept = concept}  );
+                            Console.WriteLine($"Returning {resJson}");
                             return plugin.WriteString(resJson);
-                        } else  if (reqObject?.Code == "US") {
-                            var resJson = System.Text.Json.JsonSerializer.Serialize(new LookupResponse { Concept = new Concept { Code = reqObject.Code, Properties = new List<Property> { new Property { Code = "en", Value = new ValueString {Value = "USA"}} } } });
-                            return plugin.WriteString(resJson);
-                        } else {
-                            return plugin.WriteString(@"{""concept"": null}");
-                        }
                     }),
                 }, withWasi: true);
                 var metadataJson = plugin.Call("metadata", "");
@@ -174,7 +169,7 @@ public class SqliteManager
     }
 
 
-    public Wasm? GedPluginByCanonicalSystem(string canonicalUrl, string? canonicalVersion = null)
+    public Wasm? GetPluginByCanonicalSystem(string canonicalUrl, string? canonicalVersion = null)
     {
         try
         {
@@ -218,12 +213,28 @@ public class SqliteManager
         }
 
         var concept = new Concept { Code = code };
-        while (reader.Read())
-        {
-            concept.Display ??= reader.GetString("display");
-            AddProperty(concept, reader);
-        }
 
+        var properties = reader.Cast<IDataRecord>()
+            .Select(record =>
+            {
+                concept.Display ??= record["display"] == DBNull.Value ? null : (string)record["display"];
+                return new
+                {
+                    PropertyCode = record["property_code"] == DBNull.Value ? null : (string)record["property_code"],
+                    Type = record["type"] == DBNull.Value ? null : (string)record["type"],
+                    TargetValue = record["target_value"] == DBNull.Value ? null : (string)record["target_value"],
+                    CodingDisplay = record["display"] == DBNull.Value ? null : (string)record["display"]
+                };
+            })
+            .Where(p => p.PropertyCode != null)
+            .Select(p => new Property
+            {
+                Code = p.PropertyCode!,
+                Value = CreateValue(p.Type!, p.TargetValue!)
+            })
+            .ToList();
+
+        concept.Properties.AddRange(properties);
         return concept;
     }
 
@@ -234,41 +245,27 @@ public class SqliteManager
         command.ExecuteNonQuery();
     }
 
-    private void AddProperty(Concept concept, SqliteDataReader reader)
+    private ValueX CreateValue(string type, string targetValue)
     {
-        if (reader.IsDBNull("property_code"))
+        return type switch
         {
-            return;
-        }
-
-        var property = new Property
-        {
-            Code = reader.GetString("property_code"),
-            Value = CreateValue(reader)
-        };
-
-        concept.Properties.Add(property);
-    }
-
-    private ValueX CreateValue(SqliteDataReader reader)
-    {
-        return reader.GetString("type") switch
-        {
-            "code" => new ValueCode { Value = reader.GetString("target_value") },
+            "code" => new ValueCode { Value = targetValue },
+            "dateTime" => new ValueDateTime { Value = targetValue },
             "coding" => new ValueCoding
             {
                 Value = new Coding
                 {
-                    System = reader.GetString("target_value"),
-                    Code = reader.GetString("target_value"),
-                    Display = reader.GetString("value_coding_display")
+                    System = targetValue,
+                    Code = targetValue,
+                    Display = targetValue
                 }
             },
-            "string" => new ValueString { Value = reader.GetString("target_value") },
-            "decimal" => new ValueDecimal { Value = reader.GetString("target_value") },
+            "string" => new ValueString { Value = targetValue },
+            "decimal" => new ValueDecimal { Value = targetValue },
             _ => throw new Exception("Unknown property type")
         };
     }
+
     public async IAsyncEnumerable<Dictionary<string, object>> QueryAsync(string query, IReadOnlyDictionary<string, object> queryParams, List<string> dbNamesToAttach, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var MAX_CYCLES = 1_500_000_000;

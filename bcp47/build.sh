@@ -1,2 +1,3 @@
-cargo build --release --target wasm32-wasi
-wasm-tools component new ./target/wasm32-wasi/release/bcp47.wasm     -o bcp47.wasm --adapt ./wasi_snapshot_preview1.reactor.wasm
+RUSTFLAGS="--remap-path-prefix=$HOME/=home/" \
+cargo build --no-default-features  --lib  --release  --target wasm32-unknown-unknown && 
+wasm-opt -Oz --strip-debug -o bcp47.wasm  target/wasm32-unknown-unknown/release/bcp47.wasm

@@ -104,6 +104,8 @@ impl TerminologyDb for HostReal {
 pub enum ValueX {
     #[serde(rename = "valueString")]
     ValueString(String),
+    #[serde(rename = "valueDateTime")]
+    ValueDateTime(String),
     #[serde(rename = "valueCode")]
     ValueCode(String),
     #[serde(rename = "valueCoding")]

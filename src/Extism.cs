@@ -9,6 +9,16 @@ public abstract class ValueX
     public abstract string ValueType { get; }
 }
 
+public class ValueDateTime : ValueX
+{
+    [JsonPropertyName("valueDateTime")]
+    public required string Value { get; set; }
+
+    [JsonIgnore]
+    public override string ValueType => "valueDateTime";
+}
+
+
 public class ValueString : ValueX
 {
     [JsonPropertyName("valueString")]
@@ -90,6 +100,9 @@ public class PropertyConverter : JsonConverter<Property>
                     case "valueString":
                         property.Value = new ValueString { Value = reader.GetString() ?? "" };
                         break;
+                    case "valueDateTime":
+                        property.Value = new ValueDateTime { Value = reader.GetString() ?? "" };
+                        break;
                     case "valueCode":
                         property.Value = new ValueCode { Value = reader.GetString() ?? "" };
                         break;
@@ -114,6 +127,9 @@ public class PropertyConverter : JsonConverter<Property>
         {
             case "valueString":
                 writer.WriteString("valueString", ((ValueString)value.Value).Value);
+                break;
+            case "valueDateTime":
+                writer.WriteString("valueDateTime", ((ValueDateTime)value.Value).Value);
                 break;
             case "valueCode":
                 writer.WriteString("valueCode", ((ValueCode)value.Value).Value);

@@ -41,7 +41,6 @@ public class ReadyFileWatcher
 
     private async void OnFileChanged(object _, FileSystemEventArgs fileEvent)
     {
-        Console.WriteLine($"On file changed {this}");
         await _semaphore.WaitAsync();
         try
         {
